@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>字流 · 互动阅读</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-theme="paper">
+
+  <!-- ======================= 书架 ======================= -->
+  <section id="shelf" class="shelf">
+    <div class="shelf-inner">
+      <header class="shelf-head">
+        <div class="brand">
+          <h1>字<em>流</em></h1>
+          <p>导入一本小说，让文字自己呼吸。<br>关键处字号会变大、词会跳出来等你点击，点完才继续往下走。</p>
+        </div>
+        <div class="shelf-actions">
+          <button id="btnSample" class="btn">试读示例</button>
+          <button id="btnTheme" class="btn icon" title="切换主题" aria-label="切换主题">◐</button>
+        </div>
+      </header>
+
+      <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="导入小说文件">
+        <div class="dz-inner">
+          <div class="dz-icon">＋</div>
+          <p class="dz-title">拖入 <b>.txt</b> 或 <b>.epub</b>，或点击选择文件</p>
+          <p class="dz-hint">全部在本地浏览器里解析，不上传、不联网</p>
+        </div>
+        <input id="fileInput" type="file" accept=".txt,.epub,text/plain,application/epub+zip" multiple hidden>
+      </div>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <ul id="bookList" class="book-list"></ul>
+      <p id="shelfEmpty" class="shelf-empty" hidden>书架还是空的 —— 先导入一本，或点右上角「试读示例」。</p>
+    </div>
+  </section>
+
+  <!-- ======================= 阅读器 ======================= -->
+  <section id="reader" class="reader" hidden aria-label="阅读器">
+    <header class="reader-head">
+      <button id="btnBack" class="btn icon" title="返回书架" aria-label="返回书架">←</button>
+      <div class="reader-meta">
+        <div id="chapterTitle" class="chapter-title">—</div>
+        <div class="progress" id="progressTrack" role="slider" tabindex="0" aria-label="本章进度">
+          <div id="progressBar" class="progress-bar"></div>
+          <div id="progressKnob" class="progress-knob"></div>
+          <div id="progressTip" class="progress-tip" hidden></div>
+        </div>
+      </div>
+      <div class="reader-actions">
+        <button id="btnSearch" class="btn icon" title="搜索全书" aria-label="搜索全书">⌕</button>
+        <button id="btnChapters" class="btn icon" title="目录" aria-label="目录">☰</button>
+        <button id="btnStory" class="btn icon" title="番外 · 分支" aria-label="番外与分支剧情">❖</button>
+        <button id="btnCompanion" class="btn icon" title="阿泠 · 守卷人" aria-label="与阿泠对话">☾</button>
+        <button id="btnAuto" class="btn icon" title="自动播放" aria-label="自动播放">▷</button>
+        <button id="btnSettings" class="btn icon" title="阅读设置" aria-label="阅读设置">⚙</button>
+      </div>
+    </header>
+
+    <main id="stage" class="stage" tabindex="0">
+      <div id="beats" class="beats"></div>
+    </main>
+
+    <footer class="reader-foot">
+      <span id="hint" class="hint">点击任意处继续　·　空格</span>
+      <button id="btnNext" class="btn primary small">继续</button>
+    </footer>
+
+    <div id="wordLayer" class="layer" hidden></div>
+    <div id="choiceLayer" class="layer" hidden></div>
+    <div id="gateLayer" class="layer gate-layer" hidden></div>
+    <aside id="settings" class="drawer" hidden aria-label="阅读设置"></aside>
+
+    <button id="selChip" class="sel-chip" hidden>⟲ 回声</button>
+  </section>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- 守卷人阿泠：场景气泡 + 对话面板 -->
+  <div id="companionBubble" class="companion-bubble" hidden></div>
+  <div id="companionPanel" class="companion-panel" hidden></div>
+
+  <div id="crash" class="crash" hidden>
+    <h3>出错了</h3>
+    <pre id="crashMsg"></pre>
+    <p style="color:#8b8378;font-size:12px;font-family:var(--sans)">
+      把上面这段发给我，或者按 F5 刷新重试。
+    </p>
+  </div>
+
+  <script src="js/zip.js" defer></script>
+  <script src="js/store.js" defer></script>
+  <script src="js/importers.js" defer></script>
+  <script src="js/engine.js" defer></script>
+  <script src="js/motion.js" defer></script>
+  <script src="js/stories.js" defer></script>
+  <script src="js/companion.js" defer></script>
+  <script src="js/generator.js" defer></script>
+  <script src="js/sample.js" defer></script>
+  <script src="js/ui.js" defer></script>
+</body>
+</html>

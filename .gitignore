@@ -1,0 +1,4 @@
+# 本机数据与测试产物，不进仓库
+.workbuddy/
+tools/report.txt
+*.log

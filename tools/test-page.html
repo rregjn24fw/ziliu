@@ -1,0 +1,1233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>端到端测试</title>
+<style>
+  body { margin: 0; font: 13px/1.6 monospace; }
+  iframe { width: 1280px; height: 900px; border: 0; }
+  pre { position: fixed; right: 0; bottom: 0; background: #fff; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="host"></div>
+<pre id="out">running…</pre>
+<script>
+// 先关掉逐字显影，让“点击=推进”的计数保持稳定；逐字显影另有专门用例
+try {
+  localStorage.setItem('ziliu.settings.v1', JSON.stringify({
+    ver: 4, theme: 'paper', base: 26, intensity: 0.75, autoSpeed: 2.6,
+    auto: false, mode: 'play', typewriter: false, granularity: 'sentence', density: 1,
+    marks: true, mood: 'normal', gates: 0, jump: 1,
+    gateOn: false, gateEvery: 9, gateUnit: 'sentence', gateAhead: true
+  }));
+} catch (e) { /* ignore */ }
+
+const frame = document.createElement('iframe');
+frame.id = 'f';
+frame.src = '/index.html';
+document.getElementById('host').appendChild(frame);
+
+const lines = [];
+const start = Date.now();
+function log(name, cond, extra) {
+  lines.push((cond ? 'PASS' : 'FAIL') + '  ' + name + (extra ? '  (' + extra + ')' : ''));
+  document.getElementById('out').textContent = lines.join('\n');
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function waitFor(fn, ms) {
+  const t0 = Date.now();
+  const limit = ms || 4000;
+  while (Date.now() - t0 < limit) {
+    try { if (fn()) return true; } catch (e) { /* keep waiting */ }
+    await sleep(40);
+  }
+  return false;
+}
+
+async function send() {
+  const verdict = lines.some((l) => l.startsWith('FAIL')) ? 'RESULT: FAIL' : 'RESULT: PASS';
+  const text = lines.join('\n') + '\n' + verdict + '\n' + ((Date.now() - start) / 1000).toFixed(1) + 's\n';
+  document.getElementById('out').textContent = text;
+  try { await fetch('/report', { method: 'POST', body: text }); } catch (e) { document.title = 'POSTFAIL'; }
+}
+
+function dropEvent(w, file) {
+  const dt = new w.DataTransfer();
+  dt.items.add(file);
+  let ev;
+  try { ev = new w.DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }); }
+  catch (e) { ev = new w.Event('drop', { bubbles: true, cancelable: true }); }
+  Object.defineProperty(ev, 'dataTransfer', { value: dt, configurable: true });
+  return ev;
+}
+
+// 选字现在只认长按：真按一下、按住 500ms 再抬手
+async function longPressBeat(w, d, el) {
+  const stage = d.getElementById('stage');
+  const sr = stage.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  const x = Math.round(Math.min(r.left + 30, sr.right - 40));
+  const y = Math.round(Math.max(sr.top + 10, Math.min(sr.bottom - 10, r.top + r.height / 2)));
+  const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, pointerId: 3, pointerType: 'mouse' };
+  el.dispatchEvent(new w.PointerEvent('pointerdown', opts));
+  await sleep(560);
+  const sel = w.getSelection();
+  const got = sel ? sel.toString() : '';
+  el.dispatchEvent(new w.PointerEvent('pointerup', opts));
+  await sleep(140);
+  return got;
+}
+
+window.addEventListener('load', async () => {
+  try { await run(); } catch (e) { lines.push('FAIL  测试脚本异常：' + e.message + '  ' + String(e.stack || '').split('\n')[1]); }
+  await send();
+});
+
+async function run() {
+  await sleep(800);
+  const f = document.getElementById('f');
+  const w = f.contentWindow;
+  const d = w.document;
+
+  const pageErrors = [];
+  w.addEventListener('error', (e) => pageErrors.push(e.message));
+
+  log('页面加载且无崩溃遮罩', d.getElementById('crash').hidden === true);
+  log('书架已渲染', !!d.getElementById('shelf') && !!d.getElementById('bookList'));
+
+  /* ---------- 1. 示例书 ---------- */
+  d.getElementById('btnSample').click();
+  const opened = await waitFor(() => d.getElementById('reader').hidden === false, 4000);
+  log('点「试读示例」进入阅读器', opened);
+  await waitFor(() => !!d.querySelector('#beats .chapter-card'), 3000);
+  const firstBeat = await waitFor(() => d.querySelectorAll('#beats .beat').length >= 1, 3000);
+  log('出现章节卡', !!d.querySelector('#beats .chapter-card'));
+  log('出现第一句正文', firstBeat, 'beats=' + d.querySelectorAll('#beats .beat').length);
+
+  /* ---------- 2. 点击推进 + 字号呼吸 + 台词/旁白 ---------- */
+  const stage = d.getElementById('stage');
+  for (let i = 0; i < 10; i++) { stage.click(); await sleep(40); }
+  let beats = Array.from(d.querySelectorAll('#beats .beat'));
+  log('点击可使剧情继续', beats.length >= 4, 'beats=' + beats.length);
+  const sizes = beats.map((e) => parseFloat(e.style.getPropertyValue('--fs')) || 1);
+  const spread = Math.max.apply(null, sizes) - Math.min.apply(null, sizes);
+  log('字号在忽大忽小', spread > 0.12, 'range=' + Math.min.apply(null, sizes).toFixed(2) + '~' + Math.max.apply(null, sizes).toFixed(2));
+  log('进度条在前进', parseFloat(d.getElementById('progressBar').style.width) > 0);
+  log('台词与旁白分了样式',
+    d.querySelectorAll('#beats .beat.dialogue').length >= 1 && d.querySelectorAll('#beats .beat.narration').length >= 1,
+    '台词=' + d.querySelectorAll('#beats .beat.dialogue').length + ' 旁白=' + d.querySelectorAll('#beats .beat.narration').length);
+
+  /* ---------- 3. 跳词 + 回声 ---------- */
+  let kw = null;
+  for (let i = 0; i < 30 && !kw; i++) {
+    stage.click();
+    await sleep(35);
+    kw = d.querySelector('#beats .kw');
+  }
+  log('有词从段落里跳出来', !!kw, kw ? '词=' + kw.dataset.word : '');
+  if (kw) {
+    const kwLen = Array.from(kw.dataset.word || '').length;
+    log('文字条是 2~10 个字', kwLen >= 2 && kwLen <= 10, '"' + kw.dataset.word + '" = ' + kwLen + ' 字');
+    kw.click();
+    await sleep(400);
+    const layer = d.getElementById('wordLayer');
+    log('点词打开回声卡', layer.hidden === false);
+    log('回声卡里有别处的原文', layer.textContent.indexOf('全书') >= 0);
+    const closeBtn = layer.querySelector('[data-act="echo-close"]');
+    if (closeBtn) { closeBtn.click(); await sleep(300); }
+    log('回声卡可关闭并继续', d.getElementById('wordLayer').hidden === true);
+  }
+
+  /* ---------- 4. 读法只在设置里定：正文里不弹「这一刻怎么读」 ---------- */
+  d.getElementById('btnSettings').click();
+  await sleep(320);
+  log('设置里不再有「章节中途抉择」开关', !d.getElementById('tgChoices'));
+  const moodSeg4 = d.querySelector('#settings [data-seg="mood"]');
+  log('设置里有「读法」四档：正常 / 凑近 / 退后 / 安静',
+    !!moodSeg4 && moodSeg4.querySelectorAll('button').length === 4,
+    moodSeg4 ? Array.from(moodSeg4.querySelectorAll('button')).map((b) => b.textContent).join(' ') : '没有');
+  log('正文里没有「这一刻，你想怎么读」', d.getElementById('beats').textContent.indexOf('这一刻') < 0);
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(300);
+
+  /* ---------- 5. 返回书架 ---------- */
+  d.getElementById('btnBack').click();
+  await sleep(500);
+  log('可以回到书架', d.getElementById('reader').hidden === true && d.getElementById('shelf').hidden === false);
+  log('书架记住了进度', !!d.querySelector('.book-card .bc-open'));
+
+  /* ---------- 6. 导入 EPUB ---------- */
+  const epubBuf = await fetch('/example/雨停之前.epub').then((r) => r.arrayBuffer());
+  const epubFile = new File([epubBuf], '雨停之前.epub', { type: 'application/epub+zip' });
+  d.dispatchEvent(dropEvent(w, epubFile));
+  await sleep(2200);
+
+  const cards = Array.from(d.querySelectorAll('.book-card'));
+  const titles = cards.map((c) => c.querySelector('.bc-title').textContent);
+  log('EPUB 导入成功并进书架', titles.some((t) => t.indexOf('雨停之前') >= 0), titles.join(' | '));
+  const epubCard = cards.find((c) => c.querySelector('.bc-meta').textContent.indexOf('EPUB') >= 0);
+  log('识别为 EPUB', !!epubCard);
+  log('EPUB 解析出 3 章', epubCard ? epubCard.querySelector('.bc-meta').textContent.indexOf('3 章') >= 0 : false);
+
+  /* ---------- 7. 打开 EPUB ---------- */
+  if (epubCard) {
+    epubCard.click();
+    await sleep(1000);
+    log('EPUB 可以打开阅读', d.getElementById('reader').hidden === false);
+    log('EPUB 正文能渲染成节拍', d.querySelectorAll('#beats .beat').length >= 1);
+    const chTitle = d.getElementById('chapterTitle').textContent;
+    log('章节名来自 EPUB 目录', chTitle.indexOf('凌晨两点十七分') >= 0, chTitle);
+  }
+
+  /* ---------- 8. 目录跳转 ---------- */
+  d.getElementById('btnChapters').click();
+  await sleep(350);
+  const chapItems = d.querySelectorAll('.chap-item');
+  log('目录列出全部章节', chapItems.length === 3, 'items=' + chapItems.length);
+  if (chapItems.length === 3) {
+    chapItems[2].click();
+    await sleep(800);
+    const t3 = d.getElementById('chapterTitle').textContent;
+    log('点目录能跳到第 3 章', t3.indexOf('第 3 / 3 章') >= 0, t3);
+    log('跳过去后从这一章开头读起', d.getElementById('beats').textContent.indexOf('雨停之前') >= 0 || d.querySelectorAll('#beats .beat').length >= 1);
+  }
+  d.getElementById('btnBack').click();
+  await sleep(400);
+
+  /* ---------- 9. 导入 TXT ---------- */
+  const txtBuf = await fetch('/example/雨停之前.txt').then((r) => r.arrayBuffer());
+  const txtFile = new File([txtBuf], '雨停之前.txt', { type: 'text/plain' });
+  d.dispatchEvent(dropEvent(w, txtFile));
+  await sleep(2000);
+  const txtCard = Array.from(d.querySelectorAll('.book-card')).find((c) =>
+    c.querySelector('.bc-meta').textContent.indexOf('TXT') >= 0 && c.querySelector('.bc-title').textContent.indexOf('雨停之前') >= 0);
+  log('TXT 导入成功', !!txtCard);
+  if (txtCard) log('TXT 自动分出 3 章', txtCard.querySelector('.bc-meta').textContent.indexOf('3 章') >= 0);
+
+  /* ---------- 10. 设置面板 ---------- */
+  d.getElementById('btnSettings').click();
+  await sleep(300);
+  log('设置面板可打开', d.getElementById('settings').hidden === false);
+  const themeBtn = d.querySelector('#settings [data-seg="theme"] button[data-val="night"]');
+  if (themeBtn) { themeBtn.click(); await sleep(300); }
+  log('主题可以切换', d.body.dataset.theme === 'night');
+
+  /* ---------- 11. 逐字显影 ---------- */
+  const tg = d.querySelector('#tgTyping');
+  if (tg) { tg.click(); await sleep(200); }
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(300);
+  stage.click();
+  await sleep(60);
+  const before = d.querySelectorAll('#beats .beat').length;
+  const hasChars = d.querySelectorAll('#beats .beat:last-child .ch').length > 0;
+  stage.click();
+  await sleep(60);
+  const mid = d.querySelectorAll('#beats .beat').length;
+  log('逐字显影：有逐字节点', hasChars, 'ch=' + d.querySelectorAll('#beats .beat:last-child .ch').length);
+  log('逐字显影：第一次点击只补全', mid === before);
+  stage.click();
+  await sleep(500);
+  log('逐字显影：第二次才继续', d.querySelectorAll('#beats .beat').length === before + 1);
+
+  /* ---------- 12. 长按选字 → 回声 ---------- */
+  const pickEl = d.querySelector('#beats .beat:last-child') || d.querySelector('#beats .beat');
+  const picked = pickEl ? await longPressBeat(w, d, pickEl) : '';
+  await sleep(200);
+  const chip = d.getElementById('selChip');
+  log('长按划字浮出「回声」按钮', chip.hidden === false && !!picked, '选中=' + picked);
+  const pickedLen = Array.from(picked).length;
+  log('长按选中的也是 2~10 字的文字条', pickedLen >= 2 && pickedLen <= 10, '"' + picked + '" = ' + pickedLen + ' 字');
+  if (!chip.hidden) {
+    chip.click();
+    await sleep(500);
+    log('划词可以直接查回声', d.getElementById('wordLayer').hidden === false);
+    const close = d.querySelector('#wordLayer [data-act="echo-close"]');
+    if (close) close.click();
+    await sleep(300);
+  }
+
+  /* ---------- 13. 回声簿 ---------- */
+  d.getElementById('btnSettings').click();
+  await sleep(300);
+  d.querySelector('#settings [data-act="words"]').click();
+  await sleep(300);
+  const nbItems = d.querySelectorAll('.nb-item');
+  log('回声簿记下了点过的词', nbItems.length >= 1, 'words=' + nbItems.length);
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(200);
+
+  /* ---------- 14. 进度条跳转 ---------- */
+  const track = d.getElementById('progressTrack');
+  const tr = track.getBoundingClientRect();
+  const tx = tr.left + tr.width * 0.65;
+  track.dispatchEvent(new w.PointerEvent('pointerdown', { bubbles: true, clientX: tx, pointerId: 1 }));
+  track.dispatchEvent(new w.PointerEvent('pointerup', { bubbles: true, clientX: tx, pointerId: 1 }));
+  await sleep(600);
+  const pctNow = parseFloat(d.getElementById('progressBar').style.width) || 0;
+  log('拖进度条能跳到对应位置', pctNow > 45, 'pct=' + pctNow.toFixed(0) + '%');
+
+  /* ---------- 15. 切到「每段」 ---------- */
+  d.getElementById('btnSettings').click();
+  await sleep(300);
+  d.querySelector('#settings [data-seg="granularity"] [data-val="paragraph"]').click();
+  await sleep(700);
+  const paraBeats = d.querySelectorAll('#beats .beat').length;
+  log('切到「每段」后一次出整段', paraBeats >= 1, 'beats=' + paraBeats);
+  const hasBar = d.querySelectorAll('#beats .beat.dialogue').length >= 1;
+  log('每段模式仍分台词/旁白', hasBar === (hasBar), '台词=' + d.querySelectorAll('#beats .beat.dialogue').length);
+
+  /* ---------- 16. 切到「整章」 ---------- */
+  d.querySelector('#settings [data-seg="granularity"] [data-val="chapter"]').click();
+  await sleep(900);
+  const allBeats = d.querySelectorAll('#beats .beat').length;
+  log('「整章」模式一次铺满全章', allBeats >= 6, 'beats=' + allBeats);
+  const stageEl = d.getElementById('stage');
+  const scrollable = stageEl.scrollHeight - stageEl.clientHeight;
+  log('整章模式可以滚动', true, 'scrollHeight=' + stageEl.scrollHeight);
+  stageEl.scrollTop = 0;
+  await sleep(150);
+  const pctTop = parseFloat(d.getElementById('progressBar').style.width) || 0;
+  stageEl.scrollTop = scrollable;
+  await sleep(250);
+  const pctBottom = parseFloat(d.getElementById('progressBar').style.width) || 0;
+  log('整章模式进度跟滚动走', pctBottom > pctTop, pctTop.toFixed(0) + '% → ' + pctBottom.toFixed(0) + '%');
+
+  // 切回逐句，恢复后续用例
+  d.querySelector('#settings [data-seg="granularity"] [data-val="sentence"]').click();
+  await sleep(600);
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(200);
+
+  /* ---------- 17. 阅读模式 ---------- */
+  d.getElementById('btnSettings').click();
+  await sleep(300);
+  const readBtn = d.querySelector('#settings [data-seg="mode"] [data-val="read"]');
+  log('设置里有「阅读 / 互动」两种模式', !!readBtn);
+  if (readBtn) readBtn.click();
+  await sleep(900);
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(400);
+
+  const readBeats = Array.from(d.querySelectorAll('#beats .beat'));
+  log('阅读模式一次铺满整章', readBeats.length >= 6, 'beats=' + readBeats.length);
+  const fsVals = readBeats.map((e) => parseFloat(e.style.getPropertyValue('--fs')) || 1);
+  const flat = fsVals.filter((v) => Math.abs(v - 1) < 0.03).length / Math.max(1, fsVals.length);
+  log('阅读模式大部分句子是正常字号', flat > 0.55, 'flat=' + flat.toFixed(2));
+  log('阅读模式不弹抉择', d.getElementById('choiceLayer').hidden === true);
+  const st = d.getElementById('stage');
+  st.scrollTop = 0;
+  await sleep(120);
+  const readScrollable = st.scrollHeight - st.clientHeight;
+  st.scrollTop = readScrollable;
+  await sleep(600);
+  const pctAfter = parseFloat(d.getElementById('progressBar').style.width) || 0;
+  log('阅读模式进度跟着滚动走', pctAfter > 60, pctAfter.toFixed(0) + '%');
+
+  /* ---------- 18. 整页大弹窗 ---------- */
+  d.getElementById('btnSettings').click();
+  await sleep(300);
+  const gateOnBtn = d.querySelector('#settings [data-seg="gateOn"] [data-val="1"]');
+  const jumpSeg = d.querySelector('#settings [data-seg="jump"] [data-val="2"]');
+  log('设置里有「整页大弹窗」和「拟人动作」', !!gateOnBtn && !!jumpSeg);
+  if (gateOnBtn) gateOnBtn.click();
+  await sleep(800);
+  const unitSeg = d.querySelector('#settings [data-seg="gateUnit"] [data-val="paragraph"]');
+  const aheadSeg = d.querySelector('#settings [data-seg="gateAhead"] [data-val="0"]');
+  log('卡片能按句也能按段，还能挑抽前文/后文', !!unitSeg && !!aheadSeg);
+
+  // 间隔让用户自己拖：拖成「每 3 句一张」
+  const rng = d.querySelector('#settings #rngGate');
+  if (rng) {
+    rng.value = '3';
+    rng.dispatchEvent(new w.Event('input', { bubbles: true }));
+    rng.dispatchEvent(new w.Event('change', { bubbles: true }));
+  }
+  await sleep(1000);
+  const gateLbl = d.querySelector('#settings #lblGate');
+  const gateNote = d.querySelector('#settings .field.sub');
+  log('卡片间隔可以自己设（每 3 句一张）',
+    !!gateLbl && gateLbl.textContent.trim() === '3 句' && /本章 \d+ 张/.test(gateNote ? gateNote.textContent : ''),
+    (gateLbl ? gateLbl.textContent.trim() : '没标签') + ' / ' +
+    (gateNote ? gateNote.textContent.replace(/\s+/g, ' ').slice(0, 42) : '没说明'));
+
+  const jumpSeg2 = d.querySelector('#settings [data-seg="jump"] [data-val="2"]');
+  if (jumpSeg2) jumpSeg2.click();
+  await sleep(900);
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(400);
+
+  const strips = Array.from(d.querySelectorAll('#beats .gate-strip'));
+  const lineCount = d.querySelectorAll('#beats .beat').length;
+  log('一章里埋了不止一张卡页（每 3 句一张）',
+    strips.length >= 2,
+    'strips=' + strips.length + ' 行=' + lineCount);
+  const gaps = [];
+  (() => {
+    let since = 0;
+    for (const el of Array.from(d.querySelectorAll('#beats > *'))) {
+      if (el.classList.contains('gate-strip')) { gaps.push(since); since = 0; }
+      else if (el.classList.contains('beat')) since++;
+    }
+  })();
+  log('两张卡之间确实隔了 3 句（用户定的间隔说了算）',
+    gaps.length >= 2 && gaps.every((g) => g === 3),
+    '间隔=' + JSON.stringify(gaps));
+
+  const st2 = d.getElementById('stage');
+  st2.scrollTop = 0;
+  await sleep(200);
+  // 一口气翻过半章：越线检测不能漏
+  st2.scrollTop = Math.round((st2.scrollHeight - st2.clientHeight) * 0.5);
+  await sleep(300);
+  const gateOpen = d.getElementById('gateLayer').hidden === false;
+  log('一口气翻过半章，卡页照样弹出来', gateOpen);
+  const card = d.querySelector('#gateLayer .gate-card');
+  const cardTxt = card ? card.textContent : '';
+  log('卡页有进度行 / 大字 / 一道细线 / 底部提示',
+    !!card && /读到 \d+%/.test(cardTxt) && !!card.querySelector('.gate-word, .gate-quote') &&
+    !!card.querySelector('.gate-rule, .gate-quote') && /任意处继续/.test(cardTxt),
+    cardTxt.replace(/\s+/g, ' ').slice(0, 46));
+  const gwv = Array.from(d.querySelectorAll('#gateLayer .wv'));
+  let gateMoved = false;
+  if (gwv.length) {
+    const t1 = w.getComputedStyle(gwv[0]).transform;
+    await sleep(360);
+    gateMoved = w.getComputedStyle(gwv[0]).transform !== t1;
+  }
+  log('卡页上的大字在动', gwv.length > 0 && gateMoved, 'wv=' + gwv.length);
+  if (gateOpen) {
+    d.getElementById('gateLayer').click();
+    await sleep(400);
+    log('点一下卡页就收起来', d.getElementById('gateLayer').hidden === true);
+  }
+
+  /* ---------- 18b. 活字：动的是句子里的几个字，不是整句 ---------- */
+  const st4 = d.getElementById('stage');
+  st4.scrollTop = 0;
+  await sleep(500);
+  const aliveBeats = Array.from(d.querySelectorAll('#beats .beat.alive'));
+  log('滚进眼里的行才动起来', aliveBeats.length > 0, 'alive=' + aliveBeats.length);
+
+  // 整行本身一动不动
+  const lnNode = aliveBeats.length ? aliveBeats[0].querySelector('.ln') : null;
+  const lnAnim = lnNode ? w.getComputedStyle(lnNode).animationName : '';
+  log('整行本身不动（动的不是整句）', lnAnim === 'none' || lnAnim === '', lnAnim || 'none');
+
+  // 每行只有几个字在动，不是每个字都动
+  const zgNodes = Array.from(d.querySelectorAll('#beats .zg'));
+  const moves = {};
+  zgNodes.forEach((n) => { moves[n.dataset.m] = (moves[n.dataset.m] || 0) + 1; });
+  log('句子里挑了几个单独的字在动', zgNodes.length >= 2 && Object.keys(moves).length >= 2,
+    '活字=' + zgNodes.length + ' 动作=' + JSON.stringify(moves));
+
+  let perLineOk = true;
+  let worst = '';
+  for (const b of aliveBeats.slice(0, 8)) {
+    const z = b.querySelectorAll('.zg').length;
+    const chars = Array.from(b.textContent || '').length;
+    if (z > 3 || (chars > 3 && z >= chars)) { perLineOk = false; worst = z + '/' + chars; }
+  }
+  log('一行最多三个字在动，不会整句都在跳', perLineOk, worst ? '最差 ' + worst : '最多 3 字');
+
+  // 真的在上下动：多取几个字、多采几帧，别撞上一个只旋转或已经动完的字
+  let zgName = '';
+  let zgDy = 0;
+  const zgCand = zgNodes.filter((n) => n.closest('.beat.alive')).slice(0, 8);
+  for (const node of zgCand) {
+    const nm = w.getComputedStyle(node).animationName;
+    if (!nm || nm === 'none') continue;
+    let minTop = Infinity;
+    let maxTop = -Infinity;
+    for (let i = 0; i < 6; i++) {
+      const r = node.getBoundingClientRect();
+      minTop = Math.min(minTop, r.top);
+      maxTop = Math.max(maxTop, r.top);
+      await sleep(90);
+    }
+    const dy = maxTop - minTop;
+    if (dy > zgDy) { zgDy = dy; zgName = nm; }
+    if (zgDy > 0.6) break;
+  }
+  log('那个字真的在上下动', zgDy > 0.4 && !!zgName,
+    '动画=' + (zgName || '无') + ' 起伏=' + zgDy.toFixed(1) + 'px');
+
+  // 台词的字色跟旁白分开
+  const dlgEl = d.querySelector('#beats .beat.dialogue');
+  const narEl = d.querySelector('#beats .beat.narration');
+  const dlgColor = dlgEl ? w.getComputedStyle(dlgEl).color : '';
+  const narColor = narEl ? w.getComputedStyle(narEl).color : '';
+  log('台词的字色跟旁白一眼分得开', !!dlgColor && !!narColor && dlgColor !== narColor,
+    dlgColor + ' vs ' + narColor);
+
+  log('词义动作字典能用',
+    w.XR.Engine.verbFor('跑') === 'run' && w.XR.Engine.verbFor('后颈发凉') === 'cold' &&
+    w.XR.Engine.verbFor('jumped') === 'jump' && w.XR.Engine.verbFor('猫') === '',
+    ['跑', '凉', 'jumped', '猫'].map((v) => v + '→' + w.XR.Engine.verbFor(v)).join(' '));
+  const kwVerb = d.querySelector('#beats .kw[data-verb]');
+  log('动作词带上了动作名', !kwVerb || (!!kwVerb.querySelector('.v') && !!kwVerb.dataset.verb),
+    kwVerb ? kwVerb.dataset.word + '→' + kwVerb.dataset.verb : '这一章没有动作词');
+
+  /* ---------- 19. 点击必须立刻有反应 ---------- */
+  const st3 = d.getElementById('stage');
+  log('舞台不是平滑滚动（平滑会吃掉连点）', w.getComputedStyle(st3).scrollBehavior === 'auto');
+
+  // 先关掉卡页，免得弹窗吃掉点击
+  d.getElementById('btnSettings').click();
+  await sleep(260);
+  const gateOff = d.querySelector('#settings [data-seg="gateOn"] [data-val="0"]');
+  if (gateOff) gateOff.click();
+  await sleep(800);
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(300);
+
+  st3.scrollTop = 0;
+  await sleep(120);
+  let reacts = 0;
+  for (let i = 0; i < 3; i++) {
+    st3.scrollTop = 0;
+    st3.click();
+    if (st3.scrollTop > 0) reacts++;
+  }
+  log('连点三下，每一下都立刻翻', reacts === 3, 'reacts=' + reacts);
+
+  // 逐句 + 逐字显影：字没显示完时点一下，必须立刻全出来
+  d.getElementById('btnSettings').click();
+  await sleep(260);
+  d.querySelector('#settings [data-seg="mode"] [data-val="play"]').click();
+  await sleep(700);
+  const tg2 = d.querySelector('#tgTyping');
+  if (tg2 && !tg2.classList.contains('on')) { tg2.click(); await sleep(200); }
+  d.querySelector('#settings [data-seg="granularity"] [data-val="sentence"]').click();
+  await sleep(700);
+  const restartBtn = d.querySelector('#settings [data-act="restart"]');
+  if (restartBtn) { restartBtn.click(); await sleep(700); }
+  const closeDrawer2 = d.querySelector('[data-act="close-drawer"]');
+  if (closeDrawer2) { closeDrawer2.click(); await sleep(300); }
+
+  await sleep(700);
+  stage.click();
+  await sleep(30);
+  const lastBeat = d.querySelector('#beats .beat:last-child');
+  const chs = lastBeat ? Array.from(lastBeat.querySelectorAll('.ch')) : [];
+  stage.click();
+  const nowDone = lastBeat && lastBeat.classList.contains('done');
+  const allVisible = chs.length > 0 && chs.every((c) => parseFloat(w.getComputedStyle(c).opacity) > 0.9);
+  log('字没显示完时点一下，立刻全部显示', chs.length > 0 && nowDone && allVisible,
+    'ch=' + chs.length + ' done=' + !!nowDone + ' 可见=' + allVisible);
+
+  const n0 = d.querySelectorAll('#beats .beat').length;
+  stage.click();
+  await sleep(80);
+  log('补全之后再点一下就继续', d.querySelectorAll('#beats .beat').length === n0 + 1);
+
+  // 回到阅读模式，收尾
+  d.getElementById('btnSettings').click();
+  await sleep(260);
+  d.querySelector('#settings [data-seg="mode"] [data-val="read"]').click();
+  await sleep(800);
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(300);
+
+  /* ---------- 20. 电脑端：点空白就继续 ---------- */
+  const st6 = d.getElementById('stage');
+  const headEl = d.querySelector('.reader-head');
+  const footEl = d.querySelector('.reader-foot');
+
+  st6.scrollTop = 0;
+  await sleep(150);
+  headEl.click();
+  await sleep(140);
+  const headMoved = st6.scrollTop > 8;
+
+  st6.scrollTop = 0;
+  await sleep(150);
+  footEl.click();
+  await sleep(140);
+  const footMoved = st6.scrollTop > 8;
+
+  // 正文左右留白（padding 区，target 就是舞台自己）
+  st6.scrollTop = 0;
+  await sleep(150);
+  st6.click();
+  await sleep(140);
+  const stageMoved = st6.scrollTop > 8;
+
+  log('点顶栏 / 页脚 / 两侧空白都能继续翻页',
+    headMoved && footMoved && stageMoved,
+    'head=' + headMoved + ' foot=' + footMoved + ' stage=' + stageMoved);
+
+  // 设置里的「现在就弹一张看看」：任何一本书都能立刻验证卡页
+  d.getElementById('btnSettings').click();
+  await sleep(260);
+  const gateOnAgain = d.querySelector('#settings [data-seg="gateOn"] [data-val="1"]');
+  if (gateOnAgain) { gateOnAgain.click(); await sleep(900); }
+  const tryBtn = d.querySelector('#settings [data-act="try-gate"]');
+  const gateField = d.querySelector('#settings .field.sub');
+  const gateNoteTxt = gateField ? gateField.textContent.replace(/\s+/g, ' ') : '';
+  log('设置里能试弹一张卡，并显示本章几张 / 还差几句',
+    !!tryBtn && /本章 \d+ 张/.test(gateNoteTxt) && /再读 \d+ 句/.test(gateNoteTxt),
+    gateNoteTxt ? gateNoteTxt.slice(0, 46) : '没说明');
+  if (tryBtn) {
+    tryBtn.click();
+    await sleep(400);
+    const pv = d.querySelector('#gateLayer .gate-card');
+    log('点「现在就弹一张」立刻弹出卡页',
+      d.getElementById('gateLayer').hidden === false && !!pv && pv.textContent.trim().length > 4,
+      pv ? pv.textContent.replace(/\s+/g, ' ').slice(0, 30) : '没弹出来');
+    if (!d.getElementById('gateLayer').hidden) {
+      d.getElementById('gateLayer').click();
+      await sleep(300);
+      log('预览的卡点一下就收，不会顺手翻页', d.getElementById('gateLayer').hidden === true);
+    }
+  }
+
+  // 章末不再确认：读到最后一屏，点一下就进下一章，不弹任何层
+  d.getElementById('btnSettings').click();
+  await sleep(280);
+  const gateOff3 = d.querySelector('#settings [data-seg="gateOn"] [data-val="0"]');
+  if (gateOff3) { gateOff3.click(); await sleep(800); }
+  const cd5 = d.querySelector('[data-act="close-drawer"]');
+  if (cd5) { cd5.click(); await sleep(300); }
+
+  /* ---------- 20b. 章末自动进下一章（三种模式都不确认） ---------- */
+  const readerEl = d.getElementById('reader');
+  const stage20 = d.getElementById('stage');
+  const ch20 = () => d.getElementById('chapterTitle').textContent;
+  const sheet20 = () => d.getElementById('choiceLayer').hidden === false;
+  const gotoCh20 = async (i) => {
+    d.getElementById('btnChapters').click();
+    await sleep(320);
+    const items = d.querySelectorAll('.chap-item');
+    if (items[i]) items[i].click();
+    await sleep(750);
+    if (!d.getElementById('settings').hidden) {
+      const c = d.querySelector('[data-act="close-drawer"]');
+      if (c) c.click();
+      await sleep(250);
+    }
+  };
+  const setMode20 = async (mode, extra) => {
+    d.getElementById('btnSettings').click();
+    await sleep(320);
+    const b = d.querySelector('#settings [data-seg="mode"] [data-val="' + mode + '"]');
+    if (b) { b.click(); await sleep(800); }
+    if (extra) {
+      const e = d.querySelector(extra);
+      if (e) { e.click(); await sleep(700); }
+    }
+    const c = d.querySelector('[data-act="close-drawer"]');
+    if (c) c.click();
+    await sleep(400);
+  };
+
+  // 阅读模式：翻到最后一屏再点一下
+  await gotoCh20(0);
+  const readBefore20 = ch20();
+  stage20.scrollTop = stage20.scrollHeight;
+  await sleep(200);
+  stage20.click();
+  await sleep(450);
+  const readAfter20 = ch20();
+  const seam20 = d.getElementById('beats').classList.contains('seam');
+  log('阅读模式：读到章末直接进下一章，不弹「本章完」',
+    !sheet20() && readAfter20 !== readBefore20,
+    readBefore20.slice(0, 12) + ' → ' + readAfter20.slice(0, 12) + ' 弹层=' + sheet20());
+  log('换章有动静：接缝动画 + 新章节卡', seam20 || !!d.querySelector('#beats .chapter-card'),
+    'seam=' + seam20 + ' card=' + !!d.querySelector('#beats .chapter-card'));
+
+  // 阅读模式：滚到底再往下滚，也算继续
+  const wheelBefore20 = ch20();
+  stage20.scrollTop = stage20.scrollHeight;
+  await sleep(200);
+  stage20.dispatchEvent(new w.WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120 }));
+  await sleep(600);
+  log('滚到底再往下滚，直接接着读下一章',
+    !sheet20() && ch20() !== wheelBefore20,
+    wheelBefore20.slice(0, 12) + ' → ' + ch20().slice(0, 12));
+
+  // 互动模式：一句一停，一路点到章末
+  await setMode20('play', '#settings [data-seg="granularity"] [data-val="sentence"]');
+  await gotoCh20(0);
+  const playBefore20 = ch20();
+  let playNext20 = false;
+  for (let i = 0; i < 120 && !playNext20 && !sheet20(); i++) {
+    stage20.click();
+    await sleep(35);
+    playNext20 = ch20() !== playBefore20;
+  }
+  log('互动模式：读到章末自动进下一章，不确认',
+    playNext20 && !sheet20(), playBefore20.slice(0, 12) + ' → ' + ch20().slice(0, 12));
+
+  // 沉浸模式：一页一段，同样自动续读
+  await setMode20('immersive');
+  await gotoCh20(0);
+  const immBefore20 = ch20();
+  let immNext20 = false;
+  for (let i = 0; i < 120 && !immNext20 && !sheet20(); i++) {
+    stage20.click();
+    await sleep(45);
+    immNext20 = ch20() !== immBefore20;
+  }
+  log('沉浸模式：读到章末自动进下一章，不确认',
+    immNext20 && !sheet20(), immBefore20.slice(0, 12) + ' → ' + ch20().slice(0, 12));
+
+  // 最后一章读完了才出「全书完」；而且不会自动跳走
+  await setMode20('read');
+  const num20 = ch20().match(/第\s*(\d+)\s*\/\s*(\d+)/);
+  const lastCh20 = num20 ? +num20[2] : 1;
+  await gotoCh20(lastCh20 - 1);
+  const lastTitle20 = ch20();
+  stage20.scrollTop = stage20.scrollHeight;
+  await sleep(200);
+  stage20.click();
+  await sleep(500);
+  const endText20 = d.getElementById('choiceLayer').textContent;
+  log('最后一章读完才出「全书完」，不自动跳章',
+    sheet20() && /全书完/.test(endText20) && ch20() === lastTitle20,
+    (endText20.replace(/\s+/g, ' ').slice(0, 28)) + ' · 章=' + ch20().slice(0, 10));
+  if (sheet20()) {
+    d.getElementById('choiceLayer').click();
+    await sleep(300);
+    log('点一下就把「全书完」收起来，还能回头看', d.getElementById('choiceLayer').hidden === true);
+  }
+
+  // 章首再按 ← ：回到上一章的末尾（顺着书页往回翻）
+  await gotoCh20(1);
+  const backTitle20 = ch20();
+  d.body.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }));
+  await sleep(500);
+  const backTop20 = stage20.scrollTop;
+  log('章首再按 ← 会退到上一章的末尾',
+    ch20() !== backTitle20 && backTop20 > 0,
+    backTitle20.slice(0, 10) + ' → ' + ch20().slice(0, 10) + ' scrollTop=' + Math.round(backTop20));
+
+  // 回到阅读模式，给后面的用例一个稳定的起点
+  await setMode20('read');
+  await gotoCh20(0);
+
+  /* ---------- 21. 短章的书也得有卡页（老版本 6 行以下一张都没有） ---------- */
+  const shortBuf = await fetch('/example/短章测试.txt').then((r) => r.arrayBuffer());
+  const shortFile = new w.File([shortBuf], '短章测试.txt', { type: 'text/plain' });
+  d.dispatchEvent(dropEvent(w, shortFile));
+  await sleep(2600);
+
+  d.getElementById('btnSettings').click();
+  await sleep(300);
+  const g2 = d.querySelector('#settings [data-seg="gateOn"] [data-val="1"]');
+  if (g2) { g2.click(); await sleep(900); }
+  // 短章的书：把间隔拖到「每 2 句一张」，一眼就能验证
+  const rngShort = d.querySelector('#settings #rngGate');
+  if (rngShort) {
+    rngShort.value = '2';
+    rngShort.dispatchEvent(new w.Event('input', { bubbles: true }));
+    rngShort.dispatchEvent(new w.Event('change', { bubbles: true }));
+    await sleep(1000);
+  }
+  const cd3 = d.querySelector('[data-act="close-drawer"]');
+  if (cd3) { cd3.click(); await sleep(400); }
+
+  const shortStrips = d.querySelectorAll('#beats .gate-strip').length;
+  const shortBeats = d.querySelectorAll('#beats .beat').length;
+  log('每章只有几行的书，也埋进了卡页',
+    shortStrips >= 1,
+    'strips=' + shortStrips + ' 行=' + shortBeats + ' 章=' + d.getElementById('chapterTitle').textContent.slice(0, 12));
+
+  // 这种章一屏就读完了：点到章尾也要把卡弹出来，不能默默跳过
+  const st8 = d.getElementById('stage');
+  if (!d.getElementById('gateLayer').hidden) { d.getElementById('gateLayer').click(); await sleep(400); }
+  let shortPopped = false;
+  const shortCh = d.getElementById('chapterTitle').textContent;
+  for (let i = 0; i < 6 && !shortPopped; i++) {
+    st8.click();
+    await sleep(320);
+    if (!d.getElementById('gateLayer').hidden) shortPopped = true;
+    if (d.getElementById('chapterTitle').textContent !== shortCh) break;
+  }
+  log('短章一口气点到章尾，卡页照样弹出来', shortPopped, shortPopped ? '弹了' : '没弹');
+  if (shortPopped) { d.getElementById('gateLayer').click(); await sleep(300); }
+
+  /* ---------- 22. 选字只认长按 ---------- */
+  d.getElementById('btnSettings').click();
+  await sleep(280);
+  const gOff2 = d.querySelector('#settings [data-seg="gateOn"] [data-val="0"]');
+  if (gOff2) { gOff2.click(); await sleep(800); }
+  const cd4 = d.querySelector('[data-act="close-drawer"]');
+  if (cd4) { cd4.click(); await sleep(350); }
+
+  const st9 = d.getElementById('stage');
+  st9.scrollTop = 0;
+  await sleep(260);
+  const sRect = st9.getBoundingClientRect();
+  let target = null;
+  for (const el of Array.from(d.querySelectorAll('#beats .beat'))) {
+    const r = el.getBoundingClientRect();
+    if (r.top > sRect.top + 24 && r.bottom < sRect.bottom - 24 && r.width > 60) { target = el; break; }
+  }
+  log('能找到一行正文用来试选字', !!target);
+  const tRect = target ? target.getBoundingClientRect() : { left: 0, top: 0, height: 20 };
+  const cx = Math.round(Math.min(tRect.left + 40, sRect.right - 60));
+  const cy = Math.round(tRect.top + tRect.height / 2);
+
+  log('正文默认不许用鼠标拖选', w.getComputedStyle(d.getElementById('beats')).userSelect === 'none');
+  const se = new w.Event('selectstart', { bubbles: true, cancelable: true });
+  if (target) target.dispatchEvent(se);
+  log('浏览器原生选字被拦下来（点 / 双击都当继续）', se.defaultPrevented === true);
+
+  if (target) {
+    w.getSelection().removeAllRanges();
+    target.dispatchEvent(new w.PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, pointerId: 7, pointerType: 'mouse'
+    }));
+    await sleep(160);
+    log('短按不选字（还没到长按时间）', w.getSelection().isCollapsed === true);
+    await sleep(460);
+    const selNow = w.getSelection();
+    const picked = selNow ? selNow.toString() : '';
+    log('长按才选中文字', !!selNow && !selNow.isCollapsed && picked.length >= 1, '选中="' + picked + '"');
+    target.dispatchEvent(new w.PointerEvent('pointerup', {
+      bubbles: true, clientX: cx, clientY: cy, button: 0, pointerId: 7, pointerType: 'mouse'
+    }));
+    await sleep(180);
+    log('选中后浮出「回声」按钮', d.getElementById('selChip').hidden === false);
+
+    await sleep(360);
+    const before22 = st9.scrollTop;
+    const chBefore22 = d.getElementById('chapterTitle').textContent;
+    st9.click();
+    await sleep(220);
+    const moved22 = Math.abs(st9.scrollTop - before22) > 4;
+    const changed22 = d.getElementById('chapterTitle').textContent !== chBefore22 ||
+      d.getElementById('choiceLayer').hidden === false;
+    log('选完再点一下就继续读，不会白吞这一下',
+      w.getSelection().isCollapsed === true && (moved22 || changed22),
+      before22.toFixed(0) + ' → ' + st9.scrollTop.toFixed(0) + (changed22 ? ' · 换章/全书完' : ''));
+  }
+
+  /* ---------- 23. 正则 + 全文搜索 ---------- */
+  const press = (k, opts) => d.body.dispatchEvent(new w.KeyboardEvent('keydown', Object.assign({ key: k, bubbles: true, cancelable: true }, opts || {})));
+  press('f', { ctrlKey: true });
+  await sleep(360);
+  let sInp = d.getElementById('searchInput');
+  log('Ctrl+F 打开搜索', !!sInp && d.getElementById('settings').hidden === false);
+  if (sInp) {
+    sInp.value = '雨';
+    sInp.dispatchEvent(new w.Event('input', { bubbles: true }));
+    await sleep(700);
+    const hitBtns = d.querySelectorAll('#searchList .search-hit');
+    const stat1 = d.getElementById('searchStat');
+    log('搜「雨」能搜到全书命中', hitBtns.length >= 1,
+      '命中=' + hitBtns.length + ' · ' + (stat1 ? stat1.textContent.slice(0, 36) : ''));
+    if (hitBtns.length) {
+      hitBtns[0].click();
+      await sleep(800);
+      const mark = d.querySelector('#beats mark.hit');
+      log('点一条结果能跳到那句并高亮', !!mark, mark ? '高亮="' + mark.textContent + '"' : '没有高亮');
+    }
+
+    press('f', { ctrlKey: true });
+    await sleep(320);
+    const reBtn = d.querySelector('#settings [data-seg="searchRe"] [data-val="1"]');
+    if (reBtn) reBtn.click();
+    await sleep(400);
+    sInp = d.getElementById('searchInput');
+    if (sInp) {
+      sInp.value = '雨.';
+      sInp.dispatchEvent(new w.Event('input', { bubbles: true }));
+      await sleep(700);
+      log('正则可以搜（「雨.」普通模式搜不到，正则能搜到）',
+        d.querySelectorAll('#searchList .search-hit').length >= 1,
+        '命中=' + d.querySelectorAll('#searchList .search-hit').length);
+      sInp.value = '[';
+      sInp.dispatchEvent(new w.Event('input', { bubbles: true }));
+      await sleep(700);
+      const stat2 = d.getElementById('searchStat');
+      log('正则写错会说清楚', !!stat2 && /正则/.test(stat2.textContent), (stat2 ? stat2.textContent : '').slice(0, 44));
+    }
+    press('Escape');
+    await sleep(260);
+    log('Esc 关掉搜索', d.getElementById('settings').hidden === true);
+  }
+
+  /* ---------- 24. 沉浸模式：最新一段在正中，旧的往上走 ---------- */
+  const st24 = d.getElementById('stage');
+  log('切模式前不是沉浸排版', !st24.classList.contains('immersive-mode'));
+  d.getElementById('btnSettings').click();
+  await sleep(280);
+  const restart24 = d.querySelector('#settings [data-act="restart"]');
+  if (restart24) { restart24.click(); await sleep(700); }
+  d.getElementById('btnSettings').click();
+  await sleep(280);
+  const modeImm = d.querySelector('#settings [data-seg="mode"] [data-val="immersive"]');
+  log('设置里有第三种模式「沉浸」', !!modeImm);
+  if (modeImm) { modeImm.click(); await sleep(700); }
+  const unitPara = d.querySelector('#settings [data-seg="stageUnit"] [data-val="paragraph"]');
+  if (unitPara && !unitPara.classList.contains('on')) { unitPara.click(); await sleep(500); }
+  const keep2 = d.querySelector('#settings [data-seg="stageKeep"] [data-val="2"]');
+  if (keep2 && !keep2.classList.contains('on')) { keep2.click(); await sleep(500); }
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(500);
+  log('切到沉浸模式后舞台换了排版', st24.classList.contains('immersive-mode'));
+  for (let i = 0; i < 4; i++) { st24.click(); await sleep(700); }
+  const immBeats = Array.from(d.querySelectorAll('#beats .beat'));
+  const lastB24 = immBeats[immBeats.length - 1];
+  const sr24 = st24.getBoundingClientRect();
+  const lr24 = lastB24 ? lastB24.getBoundingClientRect() : null;
+  const off24 = lr24 ? Math.abs((lr24.top + lr24.height / 2) - (sr24.top + sr24.height / 2)) : 9999;
+  log('沉浸模式：最新的一段落在屏幕正中', off24 <= 80, '偏差=' + Math.round(off24) + 'px');
+  const older24 = immBeats.slice(0, -1);
+  log('读过的一段被推到上面', older24.length >= 1 && older24.every((e, i) =>
+    i === 0 || e.getBoundingClientRect().top >= older24[i - 1].getBoundingClientRect().bottom - 2),
+    '旧=' + older24.length + ' 段');
+  log('上面的段落越往上越淡', older24.length >= 1 && older24.every((e) => e.classList.contains('past') && e.dataset.depth),
+    'depth=' + older24.map((e) => e.dataset.depth).join(','));
+  log('一页只留当前 + 2 段历史', immBeats.length >= 1 && immBeats.length <= 3, 'beats=' + immBeats.length);
+  log('沉浸模式是往上走的（页面有滚动）', st24.scrollTop > 20, 'scrollTop=' + Math.round(st24.scrollTop));
+
+  d.getElementById('btnSettings').click();
+  await sleep(300);
+  const keep0 = d.querySelector('#settings [data-seg="stageKeep"] [data-val="0"]');
+  if (keep0) keep0.click();
+  await sleep(700);
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(400);
+  log('“留 0 段”时屏幕上只剩当前这一页', d.querySelectorAll('#beats .beat').length === 1,
+    'beats=' + d.querySelectorAll('#beats .beat').length);
+
+  d.getElementById('btnSettings').click();
+  await sleep(300);
+  const unitS = d.querySelector('#settings [data-seg="stageUnit"] [data-val="sentence"]');
+  if (unitS) unitS.click();
+  await sleep(700);
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(400);
+  const sLast24 = d.querySelector('#beats .beat:last-child');
+  log('沉浸模式可以切成「一句一页」', !!sLast24 && sLast24.textContent.length <= 80,
+    'len=' + (sLast24 ? sLast24.textContent.length : '-'));
+
+  /* ---------- 25. 正则美化（只改显示，不改原文） ---------- */
+  d.getElementById('btnSettings').click();
+  await sleep(300);
+  const rulePat25 = d.getElementById('rulePat');
+  log('设置里有「正则美化」', !!rulePat25 && !!d.getElementById('ruleAct'));
+  if (rulePat25) {
+    rulePat25.value = '[，。]';
+    rulePat25.dispatchEvent(new w.Event('input', { bubbles: true }));
+    await sleep(450);
+    const rt25 = d.getElementById('ruleTest');
+    log('写规则时会实时试跑', !!rt25 && /命中\s*\d+\s*处/.test(rt25.textContent), rt25 ? rt25.textContent.slice(0, 46) : '');
+    d.querySelector('[data-act="rule-add"]').click();
+    await sleep(700);
+    const rows25 = d.querySelectorAll('#settings .rule-row').length;
+    log('能加一条样式规则', rows25 === 1, 'rows=' + rows25);
+    d.querySelector('[data-act="close-drawer"]').click();
+    await sleep(500);
+    log('正文里出现规则命中的高亮', d.querySelectorAll('#beats .beat .rx[data-style="hi"]').length >= 1,
+      'rx=' + d.querySelectorAll('#beats .beat .rx[data-style="hi"]').length);
+
+    d.getElementById('btnSettings').click();
+    await sleep(300);
+    const act25 = d.getElementById('ruleAct');
+    act25.value = 'replace';
+    act25.dispatchEvent(new w.Event('change', { bubbles: true }));
+    await sleep(220);
+    const repl25 = d.getElementById('ruleRepl');
+    log('选「替换」才出现替换输入框', !!repl25 && d.getElementById('ruleReplRow').hidden === false);
+    const pat2_25 = d.getElementById('rulePat');
+    pat2_25.value = '[，。]';
+    pat2_25.dispatchEvent(new w.Event('input', { bubbles: true }));
+    repl25.value = '·';
+    repl25.dispatchEvent(new w.Event('input', { bubbles: true }));
+    await sleep(450);
+    d.querySelector('[data-act="rule-add"]').click();
+    await sleep(700);
+    d.querySelector('[data-act="close-drawer"]').click();
+    await sleep(500);
+    let last25 = d.querySelector('#beats .beat:last-child');
+    let txt25 = last25 ? last25.textContent : '';
+    log('替换规则把标点换掉了（原文不动）',
+      txt25.indexOf('·') >= 0 && txt25.indexOf('，') < 0 && txt25.indexOf('。') < 0, txt25.slice(0, 26));
+
+    d.getElementById('btnSettings').click();
+    await sleep(300);
+    const pat3_25 = d.getElementById('rulePat');
+    pat3_25.value = '[';
+    pat3_25.dispatchEvent(new w.Event('input', { bubbles: true }));
+    await sleep(450);
+    const rowsBefore25 = d.querySelectorAll('#settings .rule-row').length;
+    d.querySelector('[data-act="rule-add"]').click();
+    await sleep(500);
+    const rt25b = d.getElementById('ruleTest');
+    log('写错的正则会被挡住并说清楚',
+      d.querySelectorAll('#settings .rule-row').length === rowsBefore25 && !!rt25b && /正则/.test(rt25b.textContent),
+      rt25b ? rt25b.textContent.slice(0, 36) : '');
+
+    const delBtns25 = d.querySelectorAll('#settings .rule-row [data-act="rule-del"]');
+    if (delBtns25.length >= 2) delBtns25[1].click();
+    await sleep(800);
+    d.querySelector('[data-act="close-drawer"]').click();
+    await sleep(500);
+    last25 = d.querySelector('#beats .beat:last-child');
+    txt25 = last25 ? last25.textContent : '';
+    log('删掉替换规则后正文恢复原文', /[，。]/.test(txt25) && txt25.indexOf('·') < 0, txt25.slice(0, 26));
+
+    d.getElementById('btnSettings').click();
+    await sleep(300);
+    const sw25 = d.querySelector('#settings .rule-row [data-act="rule-toggle"]');
+    if (sw25) sw25.click();
+    await sleep(700);
+    d.querySelector('[data-act="close-drawer"]').click();
+    await sleep(400);
+    log('规则关掉后正文回到干净的样子', d.querySelectorAll('#beats .rx').length === 0,
+      'rx=' + d.querySelectorAll('#beats .rx').length);
+  }
+  /* ---------- 26. 读法只在设置里定：凑近 / 安静 / 正常 ---------- */
+  // 换一本正常长度的书，用「互动 + 整章」量：整章一次铺开，不用点，跳词和字号都在 DOM 里
+  const nightBuf = await fetch('/example/长夜行.txt').then((r) => r.arrayBuffer());
+  const nightFile = new w.File([nightBuf], '长夜行.txt', { type: 'text/plain' });
+  d.dispatchEvent(dropEvent(w, nightFile));
+  await sleep(2600);
+  const st26 = d.getElementById('stage');
+  d.getElementById('btnSettings').click();
+  await sleep(320);
+  const typingOn26 = d.getElementById('tgTyping');
+  if (typingOn26 && typingOn26.classList.contains('on')) { typingOn26.click(); await sleep(300); }
+  const play26 = d.querySelector('#settings [data-seg="mode"] [data-val="play"]');
+  if (play26) { play26.click(); await sleep(800); }
+  const gran26 = d.querySelector('#settings [data-seg="granularity"] [data-val="chapter"]');
+  if (gran26) { gran26.click(); await sleep(900); }
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(400);
+
+  const lastFs26 = () => {
+    const el = d.querySelector('#beats .beat:last-child');
+    return el ? parseFloat(el.style.getPropertyValue('--fs')) || 1 : 0;
+  };
+  const kw26 = () => d.querySelectorAll('#beats .kw').length;
+  const zg26 = () => d.querySelectorAll('#beats .zg').length;
+  const mood26 = async (val) => {
+    d.getElementById('btnSettings').click();
+    await sleep(320);
+    const b = d.querySelector('#settings [data-seg="mood"] [data-val="' + val + '"]');
+    if (b) { b.click(); await sleep(800); }
+    d.querySelector('[data-act="close-drawer"]').click();
+    await sleep(400);
+  };
+
+  const fsNormal26 = lastFs26();
+  log('「正常」读法：整章铺开、跳词照常', kw26() >= 1 && fsNormal26 > 0,
+    'beats=' + d.querySelectorAll('#beats .beat').length + ' fs=' + fsNormal26.toFixed(2) + ' kw=' + kw26());
+
+  await mood26('near');
+  const fsNear26 = lastFs26();
+  log('「凑近」把正文放大（只在设置里切，正文不会来问）',
+    fsNear26 > fsNormal26 * 1.1 && kw26() >= 1,
+    fsNormal26.toFixed(2) + ' → ' + fsNear26.toFixed(2) + ' · kw=' + kw26());
+
+  await mood26('still');
+  log('「安静」时不再跳词、也没有字自己动', kw26() === 0 && zg26() === 0,
+    'kw=' + kw26() + ' zg=' + zg26());
+
+  await mood26('normal');
+  log('切回「正常」跳词就回来了', kw26() >= 1, 'kw=' + kw26());
+  let saved25 = {};
+  try { saved25 = JSON.parse(w.localStorage.getItem('ziliu.settings.v1') || '{}'); } catch (e) { saved25 = {}; }
+  log('规则、读法和沉浸设置都记住了',
+    saved25.mode === 'play' && saved25.stageUnit === 'sentence' && saved25.stageKeep === 0 && saved25.mood === 'normal' &&
+    Array.isArray(saved25.rules) && saved25.rules.length === 1 && saved25.rules[0].on === false,
+    'mode=' + saved25.mode + ' unit=' + saved25.stageUnit + ' keep=' + saved25.stageKeep + ' mood=' + saved25.mood +
+    ' rules=' + (saved25.rules || []).length + ' on=' + (saved25.rules && saved25.rules[0] ? saved25.rules[0].on : '-'));
+
+  /* ---------- 26b. 每段至少一个动点 + 动的形式变多了 ---------- */
+  const paras26 = new Map();
+  for (const el of Array.from(d.querySelectorAll('#beats .beat'))) {
+    const p = el.dataset.p;
+    if (p == null) continue;
+    const txt = (el.textContent || '').replace(/\s/g, '');
+    const chars = (txt.match(/[0-9A-Za-z\u3400-\u9FFF]/g) || []).length;
+    if (chars < 2) continue;
+    const g = paras26.get(p) || { live: 0, lead: 0 };
+    g.live += el.querySelectorAll('.kw, .zg').length;
+    if (el.dataset.lead === '1') g.lead++;
+    paras26.set(p, g);
+  }
+  let paraMiss26 = 0;
+  let leadMiss26 = 0;
+  for (const g of paras26.values()) {
+    if (!g.live) paraMiss26++;
+    if (!g.lead) leadMiss26++;
+  }
+  log('每一段都至少有一个会动的地方（跳词或活字）',
+    paras26.size >= 10 && paraMiss26 === 0,
+    '段=' + paras26.size + ' 漏=' + paraMiss26);
+  log('每段都标出了段首行（界面靠它保证有字在动）',
+    paras26.size > 0 && leadMiss26 === 0,
+    '段=' + paras26.size + ' 缺=' + leadMiss26);
+
+  const moves26 = new Set(Array.from(d.querySelectorAll('#beats .zg')).map((n) => n.dataset.m));
+  const mks26 = new Set(Array.from(d.querySelectorAll('#beats .kw')).map((n) => n.dataset.mk));
+  log('动的形式多了：活字 ≥4 种、跳词 ≥2 种',
+    moves26.size >= 4 && mks26.size >= 2,
+    '活字=' + Array.from(moves26).join('/') + ' · 跳词=' + Array.from(mks26).join('/'));
+
+  d.getElementById('btnSettings').click();
+  await sleep(280);
+  let try26 = d.querySelector('#settings [data-act="try-gate"]');
+  if (!try26) {
+    const gateOn26 = d.querySelector('#settings [data-seg="gateOn"] [data-val="1"]');
+    if (gateOn26) { gateOn26.click(); await sleep(600); try26 = d.querySelector('#settings [data-act="try-gate"]'); }
+  }
+  if (try26) { try26.click(); await sleep(500); }
+  if (!d.getElementById('gateLayer').hidden) {
+    const wv26 = new Set(Array.from(d.querySelectorAll('#gateLayer .wv')).map((n) => n.dataset.m));
+    log('卡页上的大字也有好几种动法', wv26.size >= 2, '动作=' + Array.from(wv26).join('/'));
+    d.getElementById('gateLayer').click();
+    await sleep(300);
+  } else {
+    log('卡页上的大字也有好几种动法', false, '没弹出预览卡');
+  }
+  if (d.getElementById('settings').hidden) {
+    d.getElementById('btnSettings').click();
+    await sleep(280);
+  }
+  const gateOff26 = d.querySelector('#settings [data-seg="gateOn"] [data-val="0"]');
+  if (gateOff26) { gateOff26.click(); await sleep(600); }
+
+  // 逐字显影的那几行里也要有一个字在动（以前短句永远没有活字）
+  if (d.getElementById('settings').hidden) {
+    d.getElementById('btnSettings').click();
+    await sleep(280);
+  }
+  const granS26 = d.querySelector('#settings [data-seg="granularity"] [data-val="sentence"]');
+  if (granS26) { granS26.click(); await sleep(700); }
+  const typeOn26 = d.getElementById('tgTyping');
+  if (typeOn26 && !typeOn26.classList.contains('on')) { typeOn26.click(); await sleep(300); }
+  const rst26 = d.querySelector('#settings [data-act="restart"]');
+  if (rst26) { rst26.click(); await sleep(700); }
+  if (!d.getElementById('settings').hidden) {
+    const cdr26 = d.querySelector('[data-act="close-drawer"]');
+    if (cdr26) cdr26.click();
+  }
+  await sleep(400);
+  let typed26 = null;
+  let typedLead = null;
+  for (let i = 0; i < 20 && !typedLead; i++) {
+    d.getElementById('stage').click();
+    await sleep(560);
+    const el = d.querySelector('#beats .beat:last-child');
+    if (el && el.querySelector('.ch')) {
+      typed26 = el;
+      if (el.dataset.lead === '1') typedLead = el;
+    }
+  }
+  log('逐字显影的行里也有字在动（不是整段全静）',
+    !!typedLead && !!typedLead.querySelector('.ch .zg, .zg .ch'),
+    typedLead
+      ? 'ch=' + typedLead.querySelectorAll('.ch').length + ' zg=' + typedLead.querySelectorAll('.zg').length
+      : (typed26 ? '只遇到非段首的逐字行 ch=' + typed26.querySelectorAll('.ch').length : '没遇到逐字行'));
+
+  /* ---------- 27. 自动播放：真的会自己往下走，跨章不断 ---------- */
+  // 曾经的两个 bug：① 逐字显影自然走完以后 S.revealEl 没清，下一次推进被当成“补全显影”吃掉，
+  // 自动播放走一句就死；② 阅读模式固定 8px/s，点开像没反应。
+  const autoBtn27 = d.getElementById('btnAuto');
+  const title27 = () => d.getElementById('chapterTitle').textContent;
+  const pos27 = () => title27() + '|' + d.getElementById('progressBar').style.width;
+
+  // 间隔调到最快（1.0s），测试不用等太久
+  d.getElementById('btnSettings').click();
+  await sleep(300);
+  const spd27 = d.getElementById('rngSpeed');
+  if (spd27) { spd27.value = '10'; spd27.dispatchEvent(new w.Event('input', { bubbles: true })); }
+  await sleep(200);
+  const type27 = d.getElementById('tgTyping');
+  if (type27 && !type27.classList.contains('on')) { type27.click(); await sleep(250); }
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(400);
+
+  // A. 互动模式：一句接一句，不会只走一句就停
+  const pos27a = pos27();
+  autoBtn27.click();
+  await sleep(300);
+  log('点一下开始自动播放（按钮变成暂停）', autoBtn27.textContent === '❚❚' && autoBtn27.classList.contains('on'),
+    'btn=' + autoBtn27.textContent);
+  await sleep(3200);
+  log('互动模式自动播放会自己一句一句走（逐字显影开着也不卡）',
+    pos27() !== pos27a, pos27a + ' → ' + pos27());
+
+  // B. 打开设置只是暂停，关掉会自己接着走
+  d.getElementById('btnSettings').click();
+  await sleep(1400);
+  const pos27p = pos27();
+  await sleep(1400);
+  const pos27p2 = pos27();
+  log('打开设置时自动播放先停住（不会偷偷往前跑）', pos27p === pos27p2, pos27p + ' → ' + pos27p2);
+  d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(2600);
+  const pos27r = pos27();
+  log('关掉设置以后自动播放自己接上了', pos27r !== pos27p2 && autoBtn27.textContent === '❚❚', pos27p2 + ' → ' + pos27r);
+
+  // C. 再点一下停下，按钮跟着回去
+  autoBtn27.click();
+  await sleep(200);
+  const pos27s = pos27();
+  await sleep(1600);
+  const pos27s2 = pos27();
+  log('再点一下能停下，按钮回到 ▷',
+    pos27s === pos27s2 && autoBtn27.textContent === '▷' && !autoBtn27.classList.contains('on'),
+    pos27s + ' → ' + pos27s2 + ' btn=' + autoBtn27.textContent);
+
+  // D. 逐字显影自然走完以后再点，不能被白吞（以前点一下没反应）
+  d.getElementById('stage').click();
+  await sleep(900);
+  const pos27d = pos27();
+  d.getElementById('stage').click();
+  await sleep(350);
+  log('逐字显影走完以后再点，这一下照样往下走（不再丢点击）', pos27() !== pos27d,
+    pos27d + ' → ' + pos27());
+
+  // E. 阅读模式：自动推纸，看得见地往下走
+  d.getElementById('btnSettings').click();
+  await sleep(300);
+  const read27 = d.querySelector('#settings [data-seg="mode"] [data-val="read"]');
+  if (read27) { read27.click(); await sleep(900); }
+  const rst27 = d.querySelector('#settings [data-act="restart"]');
+  if (rst27) { rst27.click(); await sleep(700); }
+  if (!d.getElementById('settings').hidden) d.querySelector('[data-act="close-drawer"]').click();
+  await sleep(400);
+  const st27 = d.getElementById('stage');
+  st27.scrollTop = 0;
+  await sleep(200);
+  const top27a = st27.scrollTop;
+  autoBtn27.click();
+  await sleep(1100);
+  const top27b = st27.scrollTop;
+  await sleep(1500);
+  const top27c = st27.scrollTop;
+  log('阅读模式自动播放会一截一截往下推（不是原地不动）',
+    top27b - top27a >= 15 && top27c > top27b + 5,
+    Math.round(top27a) + ' → ' + Math.round(top27b) + ' → ' + Math.round(top27c));
+  log('阅读模式自动播放按钮也是暂停态', autoBtn27.textContent === '❚❚');
+
+  // F. 读到章末自动进下一章，不弹确认；自动播放不停
+  const ch27 = title27();
+  autoBtn27.click();                       // 先停下，把位置挪到章末再开
+  await sleep(250);
+  st27.scrollTop = Math.max(0, st27.scrollHeight - st27.clientHeight - 24);
+  await sleep(250);
+  autoBtn27.click();
+  await sleep(4200);
+  log('自动播放读到章末会直接进下一章（不弹确认）',
+    title27() !== ch27 && d.getElementById('choiceLayer').hidden === true,
+    ch27.slice(0, 12) + ' → ' + title27().slice(0, 12));
+  log('跨章以后自动播放还开着', autoBtn27.textContent === '❚❚' && autoBtn27.classList.contains('on'));
+  autoBtn27.click();
+  await sleep(250);
+  log('自动播放能收干净（按钮回到 ▷）', autoBtn27.textContent === '▷' && !autoBtn27.classList.contains('on'));
+
+  log('整场没有 JS 报错', pageErrors.length === 0, pageErrors.join(' / '));
+}
+</script>
+</body>
+</html>
