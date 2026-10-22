@@ -3821,7 +3821,10 @@
     toast('正在测试…');
     try {
       const r = await XR.Sync.test(cfg);
-      toast('连接成功：' + r.fullName + (r.private ? '（私有）' : '（公开）') + (r.canWrite ? '' : ' · 只读'));
+      let extra = '';
+      if (r.canWrite === false) extra = ' · 令牌只有读权限（同步还需要写权限）';
+      else if (r.canWrite === null) extra = ' · 已能读到仓库，写权限将在同步时验证';
+      toast('连接成功：' + r.fullName + (r.private ? '（私有）' : '（公开）') + extra);
     } catch (e) {
       toast('连接失败：' + (e && e.message ? e.message : e), true);
     }

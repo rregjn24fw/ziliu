@@ -215,17 +215,15 @@
       info = await req(cfg, 'GET', repoURL(cfg));
     } catch (e) {
       if (e.status === 404) {
-        throw new Error('仓库找不到（404）：确认用户名 / 仓库名拼写，并确认令牌对这个私有仓库有 Contents 权限');
+        throw new Error('访问不到仓库（404）：确认用户名 / 仓库名拼写正确，并确认令牌的 Repository access 勾了这个私有仓库（选「Public repositories」是看不到私有仓库的）');
       }
+      if (e.status === 401) throw new Error('令牌无效或已过期（401）：请重新生成');
+      if (e.status === 403) throw new Error('令牌没有权限访问这个仓库（403）');
       throw e;
     }
-    let canWrite = true;
-    try {
-      const me = await req(cfg, 'GET', API + '/user');
-      const perm = info.permissions || null;
-      canWrite = perm ? !!perm.push : true;
-      if (perm && !perm.push && me && me.login) canWrite = !!perm.admin;
-    } catch (e) { /* 只读令牌也可能拿到仓库信息 */ }
+    const perm = info.permissions || {};
+    // OAuth 令牌有 push 字段；Fine-grained 令牌通常没有，此时无法从仓库信息判断写权限，交给实际同步去验证
+    const canWrite = perm.push !== undefined ? !!perm.push : null;
     return {
       ok: true,
       fullName: info.full_name,
@@ -233,6 +231,24 @@
       branch: cfg.branch || 'main',
       canWrite
     };
+  }
+
+  /* 同步前先探一次仓库：私有仓库 + 没授权的令牌，GitHub 对任何请求都回 404
+     （不泄露仓库是否存在），和「文件还不存在」的 404 一模一样。
+     不先探这里，用户只会看到「books：找不到仓库」，误以为仓库名填错了。 */
+  async function probeAccess(cfg) {
+    const owner = String((cfg && cfg.owner) || '').trim();
+    const repo = String((cfg && cfg.repo) || '').trim();
+    try {
+      await req(cfg, 'GET', repoURL(cfg));
+    } catch (e) {
+      if (e.status === 404) {
+        throw new Error('访问不到 ' + owner + '/' + repo + '（404）。可能是：① 仓库名拼写不对；② 令牌的 Repository access 没勾这个私有仓库；③ 令牌没保存或复制不全');
+      }
+      if (e.status === 401) throw new Error('令牌无效或已过期（401）：请重新生成');
+      if (e.status === 403) throw new Error('令牌没有权限访问 ' + owner + '/' + repo + '（403）');
+      throw e;
+    }
   }
 
   /* ---------------- 编排：拉 → 合 → 推 ---------------- */
@@ -258,6 +274,14 @@
     const summary = { pulled: 0, pushed: 0, conflicts: 0, files: [], errors: [], at: Date.now() };
     if (!cfg || !cfg.enabled) {
       summary.errors.push('同步没开：先在设置里填好仓库并打开「启用同步」');
+      return summary;
+    }
+    // 先探一次仓库：访问不到就直接停，别再等逐个文件报 404
+    try {
+      await probeAccess(cfg);
+    } catch (e) {
+      summary.errors.push(e.message);
+      await Store.saveSyncState({ lastError: e.message });
       return summary;
     }
     const st = await Store.getSyncState();
@@ -308,6 +332,9 @@
           } catch (e2) {
             summary.errors.push(kind + '：' + e2.message);
           }
+        } else if (e.status === 404 || e.status === 403) {
+          // 能读到仓库（probeAccess 已过）却写不进文件：令牌只有读权限
+          summary.errors.push(kind + '：写入被拒（' + e.status + '）。令牌能读这个仓库但写不进去 —— 它的 Contents 权限要选「Read and write」，现在多半只有「Read」（只读）。到令牌设置里把 Contents 改成 Read and write');
         } else {
           summary.errors.push(kind + '：' + e.message);
         }
@@ -358,7 +385,7 @@
     SCHEMA, FILES, KINDS,
     toB64, fromB64, pathFor, keyOf, stampOf, fingerprint,
     mergeItems, buildPayload, parsePayload, describeError,
-    test, syncNow, getFile, putFile
+    test, syncNow, probeAccess, getFile, putFile
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = Sync;

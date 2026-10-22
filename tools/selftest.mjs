@@ -801,6 +801,10 @@ await okAsync('一次同步 = 拉取远端新进度 + 推送本地书签', async
       files.set(decodeURIComponent(path), Buffer.from(body.content, 'base64').toString('utf8'));
       return { ok: true, status: 200, json: async () => ({ content: { sha: 'sha' + (++shaN) } }) };
     }
+    // probeAccess 先探一次仓库：GET /repos/u/r
+    if (u.indexOf('/contents/') === -1 && /\/repos\/u\/r(\?|$)/.test(u)) {
+      return { ok: true, status: 200, json: async () => ({ full_name: 'u/r', private: true, permissions: {} }) };
+    }
     const path = decodeURIComponent(u.split('/contents/')[1] || '').split('?')[0];
     if (files.has(path)) {
       return { ok: true, status: 200, json: async () => ({ type: 'file', sha: 'sha-old', content: Buffer.from(files.get(path), 'utf8').toString('base64') }) };
