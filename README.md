@@ -32,7 +32,7 @@ python -m http.server 8080
 
 打开 `http://localhost:8080`，点右上角 **「试读示例」**。想试导入，`example/` 里有 `雨停之前.epub`、`雨停之前.txt`，一个专门用来折腾解析器的 `压力测试.epub`（10 章、带图、含超长段落和空章），还有两本对照书：`短章测试.txt`（每章只有 5 行）和 `长夜行.txt`（普通长度的一章）。
 
-**方式三（手机上最省事）**：直接打开 <https://rregjn24fw.github.io/ziliu-reader/>，同一个页面，手机上也能用。
+**方式三（手机上最省事）**：直接打开 <https://rregjn24fw.github.io/ziliu/>，同一个页面，手机上也能用。
 
 ---
 
