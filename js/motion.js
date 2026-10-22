@@ -181,53 +181,22 @@
 
     const win = window;
     const calm = !!(win.matchMedia && win.matchMedia('(prefers-reduced-motion: reduce)').matches);
-    const docEl = document.documentElement;
-    const bodyEl = document.body;
     const getLevel = typeof o.getLevel === 'function' ? o.getLevel : function () { return 2; };
     const onTap = typeof o.onTap === 'function' ? o.onTap : null;
 
-    let raf = 0;
-    let px = 0;
-    let py = 0;
-    let lit = null;
     let active = false;
     let idleTimer = 0;
     let lastPoke = 0;
     let disposed = false;
 
-    function clearLit() {
-      if (lit) { lit.classList.remove('lit'); lit = null; }
-    }
-
-    function paint() {
-      raf = 0;
-      if (disposed) return;
-      docEl.style.setProperty('--gx', px + 'px');
-      docEl.style.setProperty('--gy', py + 'px');
-      const el = document.elementFromPoint(px, py);
-      const line = el && el.closest ? el.closest('.beat') : null;
-      const next = line && beats.contains(line) ? line : null;
-      if (next !== lit) {
-        if (lit) lit.classList.remove('lit');
-        lit = next;
-        if (lit) lit.classList.add('lit');
-      }
-    }
-
-    // 指针走到哪儿，那一带的字就醒一下（触屏由 CSS 自己关掉这层光）
+    // 指针移动只用来判断“人还在”（发呆计时），不再给正文上色：
+    // 鼠标移到字上不改变文字颜色、底色，也不加光斑。
     function point(x, y) {
-      if (disposed || calm || !active || getLevel() <= 0) return;
-      px = x;
-      py = y;
+      if (disposed || !active) return;
       lastPoke = performance.now();
-      bodyEl.classList.add('glow-on');
-      if (!raf) raf = requestAnimationFrame(paint);
     }
 
-    function pointOff() {
-      bodyEl.classList.remove('glow-on');
-      clearLit();
-    }
+    function pointOff() { /* 不再有需要收起的染色层 */ }
 
     // 点一下：一小圈墨
     function ripple(x, y) {
@@ -268,7 +237,7 @@
 
     // 字浪：一道光从这一行上扫过去
     function wave(el) {
-      const line = el || lit || beats.querySelector('.beat:not(.past)');
+      const line = el || beats.querySelector('.beat:not(.past)');
       if (!line || disposed || calm || getLevel() <= 0) return false;
       line.classList.remove('wave');
       void line.offsetWidth;
@@ -332,7 +301,6 @@
       detach: function () {
         disposed = true;
         clearTimeout(timer);
-        if (raf) cancelAnimationFrame(raf);
         stage.removeEventListener('pointerleave', onLeave);
         pointOff();
       }

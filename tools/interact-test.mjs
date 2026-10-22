@@ -107,7 +107,7 @@ async function main() {
   // —— 字的手感：指针光 / 墨点 / 字浪 ——
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 660, y: 470, buttons: 0 });
   await sleep(160);
-  ok('鼠标经过，正文有柔光', await evaljs(`document.body.classList.contains('glow-on')`));
+  ok('鼠标经过不再给正文染色', !(await evaljs(`document.body.classList.contains('glow-on')`)));
   const waved = await evaljs(`(function(){
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', bubbles: true }));
     return document.querySelectorAll('.beat.wave').length;

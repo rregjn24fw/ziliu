@@ -803,15 +803,12 @@ mark.hit {
 }
 /* 悬停不整块反白：色条只在下半部分，白字会落到“半截白底”上不好认，
    所以改成文字变强调色 + 色条加厚，三种主题都够清楚 */
-.kw:hover, .kw:focus-visible {
-  color: var(--accent);
-  outline: none;
-  animation: none;
-  text-shadow: none;
-}
-.kw:hover::before, .kw:focus-visible::before {
-  background: color-mix(in srgb, var(--accent) 36%, transparent);
-  transform: scaleY(1.5);
+.kw:hover { color: inherit; text-shadow: none; }
+/* 键盘走到这里时给个轮廓（只有键盘焦点会出现，鼠标经过不着色） */
+.kw:focus-visible {
+  color: inherit;
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
 }
 /* 刚滚进眼睛里的时候，这一段唯一的跳词“亮一下”，一眼就看到动点在哪 */
 .beat.alive .kw { animation: kw-fresh .9s ease-out 1; }
@@ -1630,23 +1627,8 @@ body[data-theme="paper"] .companion-panel { background: rgba(60, 45, 25, .22); }
 .beat { overflow-wrap: break-word; }
 .zg { max-width: 100%; }
 
-/* 指针走到哪儿，哪儿亮一点：一层跟着鼠标的柔光 + 当前行醒过来 */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 3;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity .5s ease;
-  background: radial-gradient(260px 260px at var(--gx, 50%) var(--gy, 40%),
-    color-mix(in srgb, var(--accent) 12%, transparent), transparent 72%);
-}
-body.glow-on::before { opacity: 1; }
-.beat.lit { transition: opacity .28s ease, filter .28s ease; }
-.beat.lit .ln { text-shadow: 0 0 .9em color-mix(in srgb, var(--accent) 26%, transparent); }
-.beat.past.lit, .beat.tone-soft.past.lit { opacity: .92; filter: none; }
-.beat.lit .kw::before { background: color-mix(in srgb, var(--accent) 34%, transparent); }
+/* 指针经过正文不再染色：鼠标移动不改变文字和底色。
+   想有反馈就点一下（墨圈 / 行的轻闪 / 跳词火花）或按 Z 扫字浪。 */
 
 /* 点一下：一小圈墨从指下散开 */
 .ink-ripple {
@@ -1718,10 +1700,7 @@ body.glow-on::before { opacity: 1; }
 .zg.peek { translate: 0 -.13em; rotate: -6deg; }
 .zg.peek:nth-child(2n) { rotate: 5deg; }
 
-/* 手机 / 触屏：没有指针光，但点按的墨圈、字浪照样留着 */
-@media (hover: none) {
-  body::before { display: none; }
-}
+/* 点按的墨圈、字浪在触屏上照样留着 */
 
 /* ============================================================
    书签 / 笔记 / 朗读 / 云同步
