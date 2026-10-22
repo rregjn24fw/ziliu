@@ -56,7 +56,7 @@
   }
 
   function pathFor(cfg, kind) {
-    const dir = String((cfg && cfg.dir) || 'ziliu-sync').replace(/^\/+|\/+$/g, '') || 'ziliu-sync';
+    const dir = String((cfg && cfg.dir) || 'data').replace(/^\/+|\/+$/g, '') || 'ziliu-sync';
     return dir + '/' + (FILES[kind] || kind + '.json');
   }
 
@@ -311,7 +311,7 @@
       try {
         const books = (await Store.syncSnapshot()).books.filter((b) => !b.deleted);
         for (const b of books) {
-          const path = (cfg.dir || 'ziliu-sync') + '/content/' + b.id + '.json';
+          const path = (cfg.dir || 'data') + '/content/' + b.id + '.json';
           const local = await Store.getBookContent(b.id);
           if (!local) continue;
           const remote = await getFile(cfg, path);

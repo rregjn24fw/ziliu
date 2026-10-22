@@ -801,7 +801,7 @@
     owner: '',
     repo: '',
     branch: 'main',
-    dir: 'ziliu-sync',
+    dir: 'data',
     token: '',
     auto: true,
     interval: 5,      // 分钟
@@ -819,7 +819,7 @@
     out.owner = String(out.owner || '').trim();
     out.repo = String(out.repo || '').trim();
     out.branch = String(out.branch || 'main').trim() || 'main';
-    out.dir = String(out.dir || 'ziliu-sync').replace(/^\/+|\/+$/g, '') || 'ziliu-sync';
+    out.dir = String(out.dir || 'data').replace(/^\/+|\/+$/g, '') || 'ziliu-sync';
     out.interval = Math.max(1, Math.min(120, Number(out.interval) || 5));
     out.auto = out.auto !== false;
     out.content = !!out.content;

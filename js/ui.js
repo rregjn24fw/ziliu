@@ -3693,7 +3693,7 @@
       '<input class="gen-input sync-input" id="syncOwner" data-key="owner" placeholder="GitHub 用户名，如 rregjn24fw" value="' + escAttr(cfg.owner) + '">' +
       '<input class="gen-input sync-input" id="syncRepo" data-key="repo" placeholder="仓库名（私有），如 ziliu-data" value="' + escAttr(cfg.repo) + '">' +
       '<input class="gen-input sync-input" id="syncBranch" data-key="branch" placeholder="分支（默认 main）" value="' + escAttr(cfg.branch) + '">' +
-      '<input class="gen-input sync-input" id="syncDir" data-key="dir" placeholder="目录（默认 ziliu-sync）" value="' + escAttr(cfg.dir) + '">' +
+      '<input class="gen-input sync-input" id="syncDir" data-key="dir" placeholder="目录（默认 data）" value="' + escAttr(cfg.dir) + '">' +
       '<input class="gen-input sync-input" id="syncToken" data-key="token" type="password" placeholder="访问令牌 PAT（repo 权限）" value="' + escAttr(cfg.token) + '">' +
       '<div class="toggle"><span>自动同步（启动 / 每 ' + cfg.interval + ' 分钟 / 联网时）</span><button class="switch ' +
       (cfg.auto ? 'on' : '') + '" data-act="sync-auto"></button></div>' +

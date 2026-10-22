@@ -730,7 +730,7 @@ console.log('\n[14] 云同步与朗读（纯函数）');
 ok('同步文件路径可预测', () => {
   assert.strictEqual(Sync.pathFor({ dir: 'ziliu-sync' }, 'books'), 'ziliu-sync/books.json');
   assert.strictEqual(Sync.pathFor({ dir: '/data/' }, 'notes'), 'data/notes.json');
-  assert.strictEqual(Sync.pathFor({}, 'progress'), 'ziliu-sync/progress.json');
+  assert.strictEqual(Sync.pathFor({}, 'progress'), 'data/progress.json');
 });
 ok('base64 往返中文不出错', () => {
   const s = '雨停之前 · line one\n第二行';
