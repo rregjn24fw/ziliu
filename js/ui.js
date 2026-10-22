@@ -3731,7 +3731,7 @@
       '<button class="btn small" data-act="sync-now">立即同步</button>' +
       '<button class="btn small ghost" data-act="sync-pull">仅拉取</button></div>' +
       '<p class="sync-state" id="syncState">' + state + '</p>' +
-      '<p class="gen-note">首次配置：<a href="https://github.com/settings/tokens" target="_blank" rel="noopener">生成 PAT</a>（勾 repo）→ 建一个私有仓库（可用本仓库）→ 填上面四项 → 测试连接 → 立即同步。令牌只存本机 localStorage，不会上传。' +
+      '<p class="gen-note">首次配置：<a href="https://github.com/settings/personal-access-tokens/new?name=ziliu-sync&description=%E5%AD%97%E6%B5%81%E9%98%85%E8%AF%BB%E6%95%B0%E6%8D%AE%E5%90%8C%E6%AD%A5&expires_in=90&contents=write&metadata=read" target="_blank" rel="noopener">生成只读写的令牌</a>（Fine-grained：Repository access 只选数据仓库，Contents 选 Read and write；也可用 <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">经典 PAT</a> 勾 repo）→ 建一个私有仓库 → 填上面几项 → 测试连接 → 立即同步。令牌只存本机 localStorage，不会上传。' +
       '冲突按每条记录的更新时间取新；删除会留墓碑，不会“复活”。离线时照常读写本地，联网或下次启动自动补同步。</p></div>';
   }
 
