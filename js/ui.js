@@ -3676,6 +3676,34 @@
   /* ============================================================
      云同步（GitHub 私有仓库）
      ============================================================ */
+  /* 令牌长得对不对：gho_/ghp_/ghu_/ghs_（经典 / OAuth）或 github_pat_（fine-grained）。
+     私有仓库 + 无效令牌时 GitHub 返回的是 404，看起来像“仓库找不到”，
+     所以先在这里拦一道，省得对着仓库名怀疑半天。 */
+  function tokenLooksOk(t) {
+    const v = String(t || '').trim();
+    return /^(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})$/.test(v);
+  }
+
+  /* ?sync=owner/repo&branch=main&dir=data —— 只预填仓库名，不带令牌 */
+  function applySyncPreset() {
+    try {
+      const q = new URLSearchParams(location.search);
+      const raw = q.get('sync');
+      if (!raw) return null;
+      const parts = String(raw).split('/').map((x) => x.trim()).filter(Boolean);
+      if (parts.length < 2) return null;
+      const cfg = XR.Store.loadSync();
+      cfg.owner = parts[0];
+      cfg.repo = parts[1];
+      if (q.get('branch')) cfg.branch = q.get('branch');
+      if (q.get('dir')) cfg.dir = q.get('dir');
+      XR.Store.saveSync(cfg);
+      return cfg.owner + '/' + cfg.repo;
+    } catch (e) {
+      return null;
+    }
+  }
+
   function syncWhen(t) {
     if (!t) return '还没同步过';
     return new Date(Number(t)).toLocaleString();
@@ -3694,7 +3722,7 @@
       '<input class="gen-input sync-input" id="syncRepo" data-key="repo" placeholder="仓库名（私有），如 ziliu-data" value="' + escAttr(cfg.repo) + '">' +
       '<input class="gen-input sync-input" id="syncBranch" data-key="branch" placeholder="分支（默认 main）" value="' + escAttr(cfg.branch) + '">' +
       '<input class="gen-input sync-input" id="syncDir" data-key="dir" placeholder="目录（默认 data）" value="' + escAttr(cfg.dir) + '">' +
-      '<input class="gen-input sync-input" id="syncToken" data-key="token" type="password" placeholder="访问令牌 PAT（repo 权限）" value="' + escAttr(cfg.token) + '">' +
+      '<input class="gen-input sync-input" id="syncToken" data-key="token" type="password" autocomplete="off" spellcheck="false" placeholder="访问令牌：ghp_… 或 github_pat_…" value="' + escAttr(cfg.token) + '">' +
       '<div class="toggle"><span>自动同步（启动 / 每 ' + cfg.interval + ' 分钟 / 联网时）</span><button class="switch ' +
       (cfg.auto ? 'on' : '') + '" data-act="sync-auto"></button></div>' +
       '<div class="toggle"><span>正文也同步（只文字，不含插图）</span><button class="switch ' +
@@ -3761,6 +3789,7 @@
     const cfg = XR.Store.loadSync();
     if (!cfg.enabled) { toast('先在设置里打开「启用同步」'); return; }
     if (!cfg.owner || !cfg.repo || !cfg.token) { toast('用户名 / 仓库 / 令牌还没填全'); return; }
+    if (!tokenLooksOk(cfg.token)) { toast('令牌看起来不对：应以 gho_ / ghp_ / github_pat_ 开头（现在填的是「' + String(cfg.token).slice(0, 6) + '…」）', true); return; }
     S.syncBusy = true;
     const label = mode === 'pull' ? '拉取中…' : '同步中…';
     toast(label);
@@ -3788,6 +3817,7 @@
   async function testSync() {
     const cfg = XR.Store.loadSync();
     if (!cfg.owner || !cfg.repo || !cfg.token) { toast('用户名 / 仓库 / 令牌还没填全'); return; }
+    if (!tokenLooksOk(cfg.token)) { toast('令牌看起来不对：应以 gho_ / ghp_ / github_pat_ 开头', true); return; }
     toast('正在测试…');
     try {
       const r = await XR.Sync.test(cfg);
@@ -3882,6 +3912,7 @@
       S.companion = XR.Companion.defaultState();
     }
     try { S.syncState = await XR.Store.getSyncState(); } catch (e) { S.syncState = null; }
+    S.syncPreset = applySyncPreset();
     try { await refreshMarks(); } catch (e) { /* ignore */ }
     applySettings();
     setupIO();
@@ -3909,6 +3940,9 @@
     }
     initAutoSync();
     renderShelf().catch((e) => console.error(e));
+    if (S.syncPreset) {
+      setTimeout(() => toast('云同步仓库已填好：' + S.syncPreset + ' · 打开一本书 → 设置 → 云同步，粘贴令牌即可'), 900);
+    }
     if (!XR.Store.getFlag('hello')) {
       XR.Store.setFlag('hello', 1);
       setTimeout(() => companionSay('first-open', {}), 1000);

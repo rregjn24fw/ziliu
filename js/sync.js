@@ -141,7 +141,7 @@
     const msg = body && body.message ? String(body.message) : '';
     if (status === 401) return '令牌无效或已过期（401）';
     if (status === 403) return '没有权限或触发了限流（403）' + (msg ? '：' + msg : '');
-    if (status === 404) return '找不到仓库 / 分支 / 文件（404）' + (msg ? '：' + msg : '');
+    if (status === 404) return '找不到仓库，或令牌没有这个私有仓库的权限（404）' + (msg ? '：' + msg : '');
     if (status === 409 || status === 422) return '云端文件刚被别处改过，稍后重试（' + status + '）';
     if (status === 429) return '请求太频繁，被 GitHub 限流了（429）';
     return 'GitHub 返回 ' + status + (msg ? '：' + msg : '');
@@ -210,7 +210,15 @@
   }
 
   async function test(cfg) {
-    const info = await req(cfg, 'GET', repoURL(cfg));
+    let info;
+    try {
+      info = await req(cfg, 'GET', repoURL(cfg));
+    } catch (e) {
+      if (e.status === 404) {
+        throw new Error('仓库找不到（404）：确认用户名 / 仓库名拼写，并确认令牌对这个私有仓库有 Contents 权限');
+      }
+      throw e;
+    }
     let canWrite = true;
     try {
       const me = await req(cfg, 'GET', API + '/user');
