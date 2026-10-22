@@ -206,6 +206,53 @@ async function main() {
     ok('英文书里跳词同样不拆字', (await evaljs(`document.querySelectorAll('.beat.latin .kw .zg').length`)) === 0);
   }
 
+  // —— B 段：书签 / 笔记 / 导出 / 同步设置 ——
+  ok('同步与朗读模块挂载', await evaljs(`!!(window.XR && XR.Sync && XR.Tts && typeof XR.Store.listBookmarks === 'function')`));
+  ok('默认不同步、不联网', (await evaljs(`XR.Store.loadSync().enabled`)) === false);
+  ok('书签能落库并按书查询', await evaljs(`(async () => {
+    const id = await XR.Store.saveBookmark({ bookId: 'probe', chapterIndex: 1, index: 3, scene: '一句话' });
+    const list = await XR.Store.listBookmarks('probe');
+    await XR.Store.deleteBookmark(id);
+    const after = await XR.Store.listBookmarks('probe');
+    return list.length === 1 && after.length === 0;
+  })()`));
+
+  const bookId = await evaljs(`XR.Store.listBooks().then((l) => (l[0] || {}).id)`);
+  await evaljs(`document.getElementById('btnMarks').click()`);
+  await sleep(400);
+  ok('书签抽屉能打开', await evaljs(`!document.getElementById('settings').hidden && !!document.querySelector('[data-act="bm-add"]')`));
+  await evaljs(`document.querySelector('[data-act="bm-add"]').click()`);
+  await sleep(500);
+  const bmCount = await evaljs(`XR.Store.listBookmarks('${bookId}').then((l) => l.length)`);
+  ok('夹书签后落库并在列表里', bmCount >= 1 && (await evaljs(`document.querySelectorAll('#settings .mark-item').length`)) >= 1, 'n=' + bmCount);
+
+  await evaljs(`document.querySelector('[data-act="note-add"]').click()`);
+  await sleep(300);
+  await evaljs(`(function(){ const t=document.getElementById('noteText'); if(t){ t.value='测试笔记：这一句很好。'; } })()`);
+  await evaljs(`document.querySelector('[data-act="note-save"]').click()`);
+  await sleep(500);
+  const noteCount = await evaljs(`XR.Store.listNotes('${bookId}').then((l) => l.length)`);
+  ok('写笔记后落库并显示', noteCount >= 1 && (await evaljs(`document.querySelectorAll('#settings .mark-item.note').length`)) >= 1, 'n=' + noteCount);
+
+  const snap = await evaljs(`XR.Store.exportAll({ content: false }).then((s) => ({ app: s.app, books: s.books.length, bm: s.bookmarks.length, notes: s.notes.length }))`);
+  ok('能导出阅读数据', snap && snap.app === 'ziliu' && snap.bm >= 1 && snap.notes >= 1, JSON.stringify(snap));
+
+  await evaljs(`document.querySelector('[data-act="close-drawer"]').click()`);
+  await sleep(200);
+  await evaljs(`document.getElementById('btnSettings').click()`);
+  await sleep(400);
+  ok('设置里有云同步与备份入口', await evaljs(`!!document.querySelector('#syncOwner') && !!document.querySelector('[data-act="export-all"]')`));
+  const toggled = await evaljs(`(function(){
+    const b = document.querySelector('[data-act="sync-toggle"]');
+    if (!b) return null;
+    b.click();
+    const on = XR.Store.loadSync().enabled;
+    const b2 = document.querySelector('[data-act="sync-toggle"]');
+    if (b2) b2.click();
+    return on === true && XR.Store.loadSync().enabled === false;
+  })()`);
+  ok('同步开关能开能关（默认仍关）', toggled === true, String(toggled));
+
   ok('整场没有 JS 报错', errors === 0, errors ? errorTexts.join(' | ').slice(0, 200) : '0');
 }
 

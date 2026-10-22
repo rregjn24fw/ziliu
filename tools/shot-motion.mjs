@@ -104,6 +104,25 @@ async function main() {
   for (let i = 0; i < 6; i++) { await evaljs(`document.getElementById('stage').click()`); await sleep(260); }
   await evaljs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await sleep(200);
+
+  if (scenario === 'marks') {
+    await evaljs(`document.getElementById('btnMarks').click()`);
+    await sleep(500);
+    await evaljs(`document.querySelector('[data-act="bm-add"]') && document.querySelector('[data-act="bm-add"]').click()`);
+    await sleep(500);
+    await evaljs(`document.querySelector('[data-act="note-add"]') && document.querySelector('[data-act="note-add"]').click()`);
+    await sleep(300);
+    await evaljs(`(function(){ const t = document.getElementById('noteText'); if (t) t.value = '这句真好，像雨停之后窗沿上最后一滴水。'; })()`);
+    await evaljs(`document.querySelector('[data-act="note-save"]') && document.querySelector('[data-act="note-save"]').click()`);
+    await sleep(700);
+  }
+  if (scenario === 'sync') {
+    await evaljs(`document.getElementById('btnSettings').click()`);
+    await sleep(500);
+    await evaljs(`(function(){ const f = document.querySelector('.sync-field'); if (f) f.scrollIntoView({ block: 'center' }); })()`);
+    await sleep(500);
+  }
+
   const hover = (process.env.HOVER || '620,420').split(',').map(Number);
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hover[0], y: hover[1], buttons: 0 });
   await sleep(500);

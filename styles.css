@@ -1711,16 +1711,94 @@ body.glow-on::before { opacity: 1; }
   45% { filter: brightness(1.18); }
 }
 
-/* 发呆时，某个字自己张望一下 */
-.zg.peek { animation: zg-peek 1.5s ease-in-out 1; }
-@keyframes zg-peek {
-  0%, 100% { transform: none; }
-  28% { transform: translateY(-.14em) rotate(-5deg); }
-  58% { transform: translateY(.02em) rotate(4deg); }
-  78% { transform: none; }
-}
+/* 发呆时，某个字自己张望一下。
+   注意：用 translate/rotate 这两个独立属性，而不是再写一个 transform 动画 ——
+   否则会盖掉这个字原本的上下跳（两条动画抢同一个 animation 属性）。 */
+.zg { transition: translate .32s var(--ease), rotate .32s var(--ease); }
+.zg.peek { translate: 0 -.13em; rotate: -6deg; }
+.zg.peek:nth-child(2n) { rotate: 5deg; }
 
 /* 手机 / 触屏：没有指针光，但点按的墨圈、字浪照样留着 */
 @media (hover: none) {
   body::before { display: none; }
 }
+
+/* ============================================================
+   书签 / 笔记 / 朗读 / 云同步
+   ============================================================ */
+.mark-list { display: flex; flex-direction: column; gap: 9px; margin-top: 12px; }
+.mark-item {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  overflow: hidden;
+  transition: border-color .2s, transform .2s var(--ease);
+}
+.mark-item:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.mark-item.note { border-left: 3px solid var(--accent); }
+.mark-item .mi-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 10px 12px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: var(--ink);
+  font-family: var(--serif);
+}
+.mark-item .mi-main:hover { background: var(--accent-soft); }
+.mi-meta {
+  font: 500 10.5px/1.4 var(--sans);
+  letter-spacing: .13em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+}
+.mi-text { font-size: 14.5px; line-height: 1.66; color: var(--ink); }
+.mi-quote { font-size: 12.5px; line-height: 1.6; color: var(--ink-3); font-style: italic; }
+.mi-del {
+  flex: none;
+  width: 34px;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  font-size: 13px;
+  transition: color .2s, background .2s;
+}
+.mi-del:hover { color: #c0392b; background: var(--accent-soft); }
+.note-draft { display: flex; flex-direction: column; gap: 8px; }
+.nd-quote {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--accent-soft);
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.sync-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.sync-row .btn { flex: 1 1 auto; justify-content: center; }
+.sync-field .gen-input { margin-bottom: 6px; }
+.sync-state {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  letter-spacing: .03em;
+  color: var(--ink-2);
+  word-break: break-all;
+}
+/* 朗读到的那一句 */
+.beat.tts-on {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+  transition: background .3s ease, box-shadow .3s ease;
+}
+#btnTts.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }

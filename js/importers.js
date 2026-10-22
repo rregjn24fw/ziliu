@@ -17,6 +17,26 @@
     return 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
 
+  /* 书的指纹：标题 + 章数 + 首章开头 + 末章结尾 + 作者。
+     同一本书在另一台设备重新导入时得到同一个 id，进度/书签/笔记才能接上；
+     不同版本（多一章、改过开头）会得到不同 id，不会被错误合并。 */
+  function bookKey(parsed) {
+    const chs = (parsed && parsed.chapters) || [];
+    const firstText = String((chs[0] && chs[0].text) || '').replace(/\s+/g, '').slice(0, 600);
+    const lastText = String((chs[chs.length - 1] && chs[chs.length - 1].text) || '').slice(-300);
+    const head = String((parsed && parsed.title) || '') + '|' + chs.length + '|' + firstText;
+    const tail = lastText + '|' + String((parsed && parsed.author) || '');
+    const fnv = (s) => {
+      let h = 2166136261;
+      for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return (h >>> 0).toString(36);
+    };
+    return 'bk_' + fnv(head) + '_' + fnv(tail);
+  }
+
   // 有字的字符数（中英文都算）：判断“这一章是不是空的”用它
   function textCount(s) {
     const m = String(s).match(/[A-Za-z0-9\u00c0-\u024f\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g);
@@ -600,7 +620,7 @@
     }
     if (!parsed.chapters || !parsed.chapters.length) throw new Error('没解析出任何章节。');
     return {
-      id: uid(),
+      id: bookKey(parsed),
       title: parsed.title || '未命名',
       author: parsed.author || '',
       source: parsed.source,
@@ -611,5 +631,5 @@
     };
   }
 
-  XR.Import = { fromFile, parseTxt, parseEpub, decodeText, cjkCount, textCount, isHeading, htmlToParagraphs, uid };
+  XR.Import = { fromFile, parseTxt, parseEpub, decodeText, cjkCount, textCount, isHeading, htmlToParagraphs, uid, bookKey };
 })();

@@ -14,10 +14,25 @@ const Stories = require('../js/stories.js');
 const Companion = require('../js/companion.js');
 const Generator = require('../js/generator.js');
 const Motion = require('../js/motion.js');
+const Sync = require('../js/sync.js');
+const Tts = require('../js/tts.js');
 
 let pass = 0;
 function ok(name, fn) {
-  try { fn(); pass++; console.log('  ✓ ' + name); }
+  try {
+    const r = fn();
+    // 异步用例必须用 await okAsync()，否则断言失败会被吞掉
+    if (r && typeof r.then === 'function') throw new Error('这是异步用例，请改用 await okAsync()');
+    pass++;
+    console.log('  ✓ ' + name);
+  } catch (e) {
+    console.log('  ✗ ' + name + '\n    ' + e.message);
+    process.exitCode = 1;
+  }
+}
+
+async function okAsync(name, fn) {
+  try { await fn(); pass++; console.log('  ✓ ' + name); }
   catch (e) { console.log('  ✗ ' + name + '\n    ' + e.message); process.exitCode = 1; }
 }
 
@@ -708,6 +723,121 @@ ok('英文句子重新拼起来时不会粘在一起', () => {
 ok('中文句子拼回去不会凭空多空格', () => {
   const beats = Engine.buildChapter({ text: '他走了。她没有回头。' }, { granularity: 'sentence' });
   assert.ok(beats.map((b) => b.text).join('').indexOf('他走了。她没有回头。') >= 0);
+});
+
+
+console.log('\n[14] 云同步与朗读（纯函数）');
+ok('同步文件路径可预测', () => {
+  assert.strictEqual(Sync.pathFor({ dir: 'ziliu-sync' }, 'books'), 'ziliu-sync/books.json');
+  assert.strictEqual(Sync.pathFor({ dir: '/data/' }, 'notes'), 'data/notes.json');
+  assert.strictEqual(Sync.pathFor({}, 'progress'), 'ziliu-sync/progress.json');
+});
+ok('base64 往返中文不出错', () => {
+  const s = '雨停之前 · line one\n第二行';
+  assert.strictEqual(Sync.fromB64(Sync.toB64(s)), s);
+});
+ok('冲突按 updatedAt 取新', () => {
+  const local = [{ id: 'a', title: '旧', updatedAt: 100 }];
+  const remote = [{ id: 'a', title: '新', updatedAt: 200 }];
+  const m = Sync.mergeItems('books', local, remote);
+  assert.strictEqual(m.items.length, 1);
+  assert.strictEqual(m.items[0].title, '新');
+});
+ok('时间戳相同：墓碑（删除）优先', () => {
+  const local = [{ id: 'a', updatedAt: 100 }];
+  const remote = [{ id: 'a', updatedAt: 100, deleted: true }];
+  assert.strictEqual(Sync.mergeItems('books', local, remote).items[0].deleted, true);
+});
+ok('进度按 bookId 合并，不按 id', () => {
+  const local = [{ bookId: 'b1', index: 3, updatedAt: 50 }];
+  const remote = [{ bookId: 'b1', index: 9, updatedAt: 80 }];
+  const m = Sync.mergeItems('progress', local, remote);
+  assert.strictEqual(m.items.length, 1);
+  assert.strictEqual(m.items[0].index, 9);
+});
+ok('合并结果和本地一样时不白推一次', () => {
+  const local = [{ id: 'a', title: '同', updatedAt: 100 }];
+  const remote = [{ id: 'a', title: '同', updatedAt: 90 }];
+  assert.strictEqual(Sync.mergeItems('books', local, remote).changed, false);
+});
+ok('坏掉的云端文件不会炸', () => {
+  assert.deepStrictEqual(Sync.parsePayload('books', '{oops'), []);
+  assert.deepStrictEqual(Sync.parsePayload('books', '{"items":[]}'), []);
+});
+ok('朗读文本清理与切块', () => {
+  assert.strictEqual(Tts.normalize('  a\u0001x\u0001b  '), 'ab');
+  const raw = ('第一句。第二句，很长很长的一段话，').repeat(6);
+  const parts = Tts.chunk(raw, 60);
+  assert.ok(parts.length >= 2);
+  assert.ok(parts.every((p) => p.length <= 60), parts.map((p) => p.length).join(','));
+  assert.ok(parts.join('').replace(/\s/g, '').length >= raw.replace(/\s/g, '').length - 2);
+});
+ok('音色选择：优先 voiceURI，其次语言', () => {
+  const list = [{ name: 'A', lang: 'en-US', voiceURI: 'a' }, { name: 'B', lang: 'zh-CN', voiceURI: 'b' }];
+  assert.strictEqual(Tts.pickVoice(list, 'b').name, 'B');
+  assert.strictEqual(Tts.pickVoice(list, '', 'zh-CN').name, 'B');
+  assert.strictEqual(Tts.pickVoice([], ''), null);
+});
+
+
+console.log('\n[15] 同步编排（假 GitHub，不联网）');
+await okAsync('一次同步 = 拉取远端新进度 + 推送本地书签', async () => {
+  const files = new Map();
+  let shaN = 0;
+  const realFetch = globalThis.fetch;
+  const realStore = globalThis.XR.Store;
+  const remoteProgress = [{ bookId: 'b1', index: 42, updatedAt: 2000 }];
+  files.set('data/progress.json', JSON.stringify({ app: 'ziliu-sync', kind: 'progress', items: remoteProgress }));
+  const localBookmarks = [{ id: 'k1', bookId: 'b1', chapterIndex: 0, index: 1, updatedAt: 1500 }];
+  const applied = {};
+  const state = { deviceId: 'dev-test', shas: {}, dirty: { bookmarks: 1 }, lastPushAt: 0, lastPullAt: 0, lastError: '' };
+
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    const method = (opts.method || 'GET').toUpperCase();
+    if (method === 'PUT') {
+      const path = u.split('/contents/')[1];
+      const body = JSON.parse(opts.body);
+      files.set(decodeURIComponent(path), Buffer.from(body.content, 'base64').toString('utf8'));
+      return { ok: true, status: 200, json: async () => ({ content: { sha: 'sha' + (++shaN) } }) };
+    }
+    const path = decodeURIComponent(u.split('/contents/')[1] || '').split('?')[0];
+    if (files.has(path)) {
+      return { ok: true, status: 200, json: async () => ({ type: 'file', sha: 'sha-old', content: Buffer.from(files.get(path), 'utf8').toString('base64') }) };
+    }
+    return { ok: false, status: 404, json: async () => ({ message: 'Not Found' }) };
+  };
+  globalThis.XR.Store = {
+    getSyncState: async () => JSON.parse(JSON.stringify(state)),
+    saveSyncState: async (patch) => { Object.assign(state, patch); if (patch.clearDirty) for (const k of [].concat(patch.clearDirty)) delete state.dirty[k]; return state; },
+    syncSnapshot: async () => ({ books: [], progress: [], bookmarks: localBookmarks, notes: [], stories: [], companion: null, settings: {} }),
+    applyRemote: async (kind, items) => { applied[kind] = items; return items.length; },
+    loadSettings: () => ({}),
+    getFlag: () => 0,
+    getCompanion: async () => null,
+    getBookContent: async () => null,
+    applyBookContent: async () => 0
+  };
+  try {
+    const cfg = { enabled: true, owner: 'u', repo: 'r', branch: 'main', dir: 'data', token: 't', content: false, auto: false };
+    const sum = await Sync.syncNow(cfg, {});
+    assert.deepStrictEqual(applied.progress, remoteProgress, '远端进度应被应用');
+    assert.ok(files.has('data/bookmarks.json'), '本地书签应被推到云端');
+    assert.strictEqual(JSON.parse(files.get('data/bookmarks.json')).items[0].id, 'k1');
+    assert.ok(sum.errors.length === 0, sum.errors.join('|'));
+    assert.ok(sum.pushed >= 1);
+    assert.ok(state.shas['data/bookmarks.json'], '应记住新 sha');
+    assert.deepStrictEqual(state.dirty, {}, '推送完应清掉脏标记');
+
+    // 第二次：没有任何变化，不应该再推送
+    const before = shaN;
+    const sum2 = await Sync.syncNow(cfg, {});
+    assert.strictEqual(shaN, before, '无变化时不应再写云端');
+    assert.strictEqual(sum2.pushed, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.XR.Store = realStore;
+  }
 });
 
 console.log('\n通过 ' + pass + ' 项' + (process.exitCode ? '，但有失败' : '，全部正常') + '\n');

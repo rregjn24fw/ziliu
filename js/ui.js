@@ -71,7 +71,17 @@
     choiceKind: '',
     choiceOptions: null,
     companionReply: null,
-    genScope: 'extra'
+    genScope: 'extra',
+    /* B 段：书签 / 笔记 / 朗读 / 同步 */
+    marks: { bookmarks: [], notes: [] },
+    markCount: 0,
+    noteDraft: null,
+    tts: { on: false, cursor: -1, step: false },
+    syncState: null,
+    syncBusy: false,
+    syncTimer: 0,
+    syncLoop: 0,
+    onlineBound: false
   };
 
   /* ---------------- 小工具 ---------------- */
@@ -193,6 +203,8 @@
     }
     D.dropzone.classList.remove('over');
     await renderShelf();
+    await XR.Store.markDirty('books');
+    queueAutoSync();
     if (last) {
       companionSay('add-book', { title: last.title, chapters: last.chapters.length });
       if (files.length === 1) openBook(last.id);
@@ -205,6 +217,11 @@
   async function openBook(id) {
     const book = await XR.Store.getBook(id);
     if (!book) { toast('这本书已经不在了'); renderShelf(); return; }
+    if (!book.chapters || !book.chapters.length) {
+      toast('这本书只有云端记录：正文不参与同步，重新导入同一文件即可接上进度与书签', true);
+      renderShelf();
+      return;
+    }
     S.book = book;
     S.bookSalt = Math.random().toString(36).slice(2, 8);
     S.story = { stack: [], current: null };
@@ -215,6 +232,7 @@
     const resume = prog && typeof prog.index === 'number' ? prog.index : -1;
     S.seen = (prog && prog.seen) || {};
     S.stories = await XR.Store.listStories(id);
+    await refreshMarks();
     loadNotebook();
 
     D.shelf.hidden = true;
@@ -234,6 +252,7 @@
 
   function backToShelf() {
     setAuto(false);
+    if (S.tts.on) ttsStop(true);
     saveProgressNow();
     if (S.book) companionSay('interrupt', { title: S.book.title });
     S.view = 'shelf';
@@ -439,6 +458,7 @@
 
   function jumpChapter(i) {
     if (!S.book) return;
+    if (S.tts.on) ttsStop(true);
     if (S.auto) setAuto(false);   // 自己点了章节 = 自己接管
     saveProgressNow();
     S.story = { stack: [], current: null };
@@ -472,6 +492,7 @@
     if (!D.gateLayer.hidden) return;
     if (!D.wordLayer.hidden || !D.choiceLayer.hidden || !D.settings.hidden) return;
     if (!S.book) return;
+    if (S.tts.on && !S.tts.step) ttsStop(true);
 
     // 整章模式：一次铺满，点/空格就是往下翻一屏（立刻翻，不做平滑动画）
     if (S.allShown) {
@@ -1637,6 +1658,8 @@
 
   function showCompanionBubble(text) {
     if (!D.companionBubble) return;
+    // 抽屉开着的时候别盖住设置面板，等关掉再说
+    if (!D.settings.hidden) return;
     D.companionBubble.innerHTML =
       '<span class="cb-name">阿泠 · 守卷人</span>' +
       '<span class="cb-text">' + esc(text) + '</span>';
@@ -2028,6 +2051,7 @@
      ============================================================ */
   function openDrawer(view) {
     stopAuto();
+    if (D.companionBubble) D.companionBubble.hidden = true;
     if (!D.gateLayer.hidden) closeGate();
     if (!D.choiceLayer.hidden) { D.choiceLayer.hidden = true; D.choiceLayer.innerHTML = ''; S.choiceKind = ''; S.choiceOptions = null; }
     if (S.drawerView === view && !D.settings.hidden) { closeDrawer(); return; }
@@ -2064,6 +2088,8 @@
     if (view === 'search') return renderSearch();
     if (view === 'stories') return renderStoryList();
     if (view === 'generator') return renderGeneratorConfig();
+    if (view === 'marks') return renderMarks();
+    if (view === 'tts') return renderTtsConfig();
     return renderSettings();
   }
 
@@ -2544,11 +2570,15 @@
       '</div><hr>' +
       '<button class="btn full" data-act="chapters">☰ 目录</button>' +
       '<button class="btn full" data-act="words">✦ 回声簿（' + Object.keys(S.notebook).length + '）</button>' +
+      '<button class="btn full" data-act="marks">✎ 书签与笔记（' + (S.markCount || 0) + '）</button>' +
       '<button class="btn full" data-act="stories">❖ 番外 · 分支</button>' +
       '<button class="btn full" data-act="generator-config">✎ 剧情生成设置</button>' +
+      '<button class="btn full" data-act="tts-config">♪ 朗读设置</button>' +
+      syncSettingsHTML() +
+      backupSettingsHTML() +
       '<button class="btn full" data-act="restart">↺ 重读本章</button>' +
       '<button class="btn full ghost" data-act="shelf">⌂ 回到书架</button>' +
-      '<p class="drawer-foot">空格 / → 继续（章末直接进下一章），← 退回一句（章首再按回到上一章），A 自动播放，M 目录，Esc 关闭。<br>不会联网，也不会改动原文的一个字。</p>';
+      '<p class="drawer-foot">空格 / → 继续（章末直接进下一章），← 退回一句（章首再按回到上一章），A 自动播放，M 目录，Esc 关闭。<br>默认不联网；云同步 / AI 只在你手动开启后才用。永远不改动原文的一个字。</p>';
     bindSettings();
   }
 
@@ -2835,7 +2865,11 @@
         e.stopPropagation();
         const id = del.dataset.del;
         if (confirm('确定删除这本书？进度也会一起删掉。')) {
-          XR.Store.deleteBook(id).then(renderShelf);
+          XR.Store.deleteBook(id).then(async () => {
+            await renderShelf();
+            XR.Store.markDirty('books');
+            queueAutoSync();
+          });
         }
         return;
       }
@@ -2852,6 +2886,8 @@
     D.btnSettings.addEventListener('click', () => openDrawer('settings'));
     if (D.btnStory) D.btnStory.addEventListener('click', () => openDrawer('stories'));
     if (D.btnCompanion) D.btnCompanion.addEventListener('click', () => openCompanion());
+    if (D.btnMarks) D.btnMarks.addEventListener('click', () => openDrawer('marks'));
+    if (D.btnTts) D.btnTts.addEventListener('click', () => ttsToggle());
     if (D.companionBubble) D.companionBubble.addEventListener('click', () => { D.companionBubble.hidden = true; openCompanion(); });
     if (D.companionPanel) D.companionPanel.addEventListener('click', (e) => { if (e.target === D.companionPanel) closeCompanionPanel(); });
     D.chapterTitle.addEventListener('click', () => openDrawer('chapters'));
@@ -2921,6 +2957,21 @@
     });
 
     // 选字只认长按：点一下 / 双击 / 拖动都不会选中文字
+    // 同步设置：输入即存（token 只在本机）
+    D.settings.addEventListener('change', (e) => {
+      const inp = e.target && e.target.closest ? e.target.closest('.sync-input') : null;
+      if (!inp) return;
+      const cfg = XR.Store.loadSync();
+      cfg[inp.dataset.key] = inp.value;
+      XR.Store.saveSync(cfg);
+    });
+    D.settings.addEventListener('change', (e) => {
+      if (!e.target || e.target.id !== 'backupFile') return;
+      const f = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (f) importBackup(f);
+    });
+
     D.reader.addEventListener('pointerdown', pressDown);
     D.reader.addEventListener('pointermove', pressMove);
     // 鼠标走过的地方泛起一点光：只是加一层视觉，不拦任何事件
@@ -3084,6 +3135,8 @@
         const id = el.dataset.id;
         if (id && confirm('删除这段番外 / 分支？')) {
           XR.Store.deleteStory(id).then(async () => {
+            XR.Store.markDirty('stories');
+            queueAutoSync();
             S.stories = await XR.Store.listStories(S.book ? S.book.id : '');
             renderStoryList();
             if (S.book) rebuildChapter(true);
@@ -3125,6 +3178,61 @@
         }
       } else if (act === 'companion-more') {
         openCompanion('');
+      } else if (act === 'marks') {
+        openDrawer('marks');
+      } else if (act === 'tts-config') {
+        openDrawer('tts');
+      } else if (act === 'tts-toggle') {
+        ttsToggle();
+      } else if (act === 'tts-stop') {
+        ttsStop();
+      } else if (act === 'tts-test') {
+        const tc = XR.Store.loadTts();
+        XR.Tts.speak('字流，读到一句，停一下。', { rate: tc.rate, pitch: tc.pitch, volume: tc.volume, voice: tc.voice, lang: 'zh-CN' });
+      } else if (act === 'bm-add') {
+        addBookmarkNow();
+      } else if (act === 'note-add') {
+        startNote();
+      } else if (act === 'note-save') {
+        saveNoteDraft();
+      } else if (act === 'note-cancel') {
+        cancelNoteDraft();
+      } else if (act === 'mark-del') {
+        deleteMark(el.dataset.kind, el.dataset.id);
+      } else if (act === 'mark-jump') {
+        jumpToMark(+el.dataset.ch, +el.dataset.i);
+      } else if (act === 'sync-toggle') {
+        const cfg = XR.Store.loadSync();
+        cfg.enabled = !cfg.enabled;
+        XR.Store.saveSync(cfg);
+        renderSettings();
+        initAutoSync();
+        if (cfg.enabled) toast('同步已开：填好用户名 / 仓库 / 令牌，再点「测试连接」');
+      } else if (act === 'sync-auto') {
+        const cfg = XR.Store.loadSync();
+        cfg.auto = !cfg.auto;
+        XR.Store.saveSync(cfg);
+        renderSettings();
+        initAutoSync();
+      } else if (act === 'sync-content') {
+        const cfg = XR.Store.loadSync();
+        cfg.content = !cfg.content;
+        XR.Store.saveSync(cfg);
+        renderSettings();
+        toast(cfg.content ? '正文也会同步（只文字，不含插图）' : '正文只留在本机');
+      } else if (act === 'sync-test') {
+        testSync();
+      } else if (act === 'sync-now') {
+        runSync('both');
+      } else if (act === 'sync-pull') {
+        runSync('pull');
+      } else if (act === 'export-all') {
+        exportBackup(true);
+      } else if (act === 'export-sync') {
+        exportBackup(false);
+      } else if (act === 'import-pick') {
+        const inp = $('#backupFile', D.settings);
+        if (inp) inp.click();
       } else if (act === 'shelf') {
         backToShelf();
       }
@@ -3258,8 +3366,456 @@
       } else if (e.key === 'z' || e.key === 'Z') {
         const lines = D.beats.querySelectorAll('.beat');
         if (S.motion && lines.length) S.motion.wave(lines[lines.length - 1]);
+      } else if (e.key === 'b' || e.key === 'B') {
+        addBookmarkNow();
+      } else if (e.key === 'n' || e.key === 'N') {
+        startNote();
+      } else if (e.key === 't' || e.key === 'T') {
+        ttsToggle();
       }
     });
+  }
+
+  /* ============================================================
+     书签 / 笔记
+     ============================================================ */
+  function beatIndexAtView() {
+    if (!S.beats.length) return 0;
+    if (!S.allShown) return Math.max(0, Math.min(S.beats.length - 1, S.index));
+    // 整章模式：取视野里最靠上的一句，作为“我读到这儿了”
+    const top = D.stage.getBoundingClientRect().top + 40;
+    const list = D.beats.querySelectorAll('.beat');
+    let idx = 0;
+    for (const el of list) {
+      if (!el._beat) continue;
+      const r = el.getBoundingClientRect();
+      if (r.bottom > top) { idx = Math.max(0, S.beats.indexOf(el._beat)); break; }
+    }
+    return idx;
+  }
+
+  function posNow() {
+    const idx = beatIndexAtView();
+    const b = S.beats[idx];
+    return {
+      chapterIndex: S.chapterIndex,
+      index: idx,
+      quote: b && b.text ? String(b.text).slice(0, 90) : ''
+    };
+  }
+
+  async function refreshMarks() {
+    if (!S.book) { S.marks = { bookmarks: [], notes: [] }; S.markCount = 0; return; }
+    S.marks = {
+      bookmarks: await XR.Store.listBookmarks(S.book.id),
+      notes: await XR.Store.listNotes(S.book.id)
+    };
+    S.markCount = S.marks.bookmarks.length + S.marks.notes.length;
+  }
+
+  async function addBookmarkNow() {
+    if (!S.book) { toast('先打开一本书'); return; }
+    const p = posNow();
+    await XR.Store.saveBookmark({
+      bookId: S.book.id, chapterIndex: p.chapterIndex, index: p.index, scene: p.quote
+    });
+    await XR.Store.markDirty('bookmarks');
+    queueAutoSync();
+    await refreshMarks();
+    toast('已夹上书签 · 第 ' + (p.chapterIndex + 1) + ' 章');
+    if (S.drawerView === 'marks') renderMarks();
+  }
+
+  function startNote() {
+    if (!S.book) { toast('先打开一本书'); return; }
+    const p = posNow();
+    S.noteDraft = { chapterIndex: p.chapterIndex, index: p.index, quote: p.quote, text: '' };
+    // 已经在书签页时不能再走 openDrawer（那会当成“再点一次 = 关掉”）
+    if (D.settings.hidden) openDrawer('marks');
+    else { S.drawerView = 'marks'; D.settings.scrollTop = 0; renderMarks(); }
+  }
+
+  async function saveNoteDraft() {
+    if (!S.book || !S.noteDraft) return;
+    const ta = $('#noteText', D.settings);
+    const text = ta ? ta.value.trim() : '';
+    if (!text) { toast('笔记还是空的'); return; }
+    await XR.Store.saveNote({
+      bookId: S.book.id,
+      chapterIndex: S.noteDraft.chapterIndex,
+      index: S.noteDraft.index,
+      quote: S.noteDraft.quote,
+      text
+    });
+    await XR.Store.markDirty('notes');
+    queueAutoSync();
+    S.noteDraft = null;
+    await refreshMarks();
+    renderMarks();
+    toast('笔记已收进这本书');
+  }
+
+  function cancelNoteDraft() {
+    S.noteDraft = null;
+    renderMarks();
+  }
+
+  function jumpToMark(chapterIndex, index) {
+    if (!S.book) return;
+    closeDrawer();
+    setAuto(false);
+    const ci = Math.max(0, Math.min((S.book.chapters.length || 1) - 1, Number(chapterIndex) || 0));
+    loadChapter(ci, typeof index === 'number' && index >= 0 ? index : -1);
+  }
+
+  async function deleteMark(kind, id) {
+    if (!id) return;
+    if (!confirm(kind === 'note' ? '删掉这条笔记？' : '取掉这枚书签？')) return;
+    if (kind === 'note') await XR.Store.deleteNote(id);
+    else await XR.Store.deleteBookmark(id);
+    await XR.Store.markDirty(kind === 'note' ? 'notes' : 'bookmarks');
+    queueAutoSync();
+    await refreshMarks();
+    renderMarks();
+  }
+
+  function markWhen(t) {
+    const d = new Date(Number(t) || Date.now());
+    const p = (n) => String(n).padStart(2, '0');
+    return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  async function renderMarks() {
+    if (!S.book) {
+      D.settings.innerHTML = drawerHead('书签与笔记') + '<p class="story-empty">先打开一本书。</p>';
+      return;
+    }
+    await refreshMarks();
+    const bms = S.marks.bookmarks.map((b) =>
+      '<div class="mark-item">' +
+      '<button class="mi-main" data-act="mark-jump" data-ch="' + b.chapterIndex + '" data-i="' + b.index + '">' +
+      '<span class="mi-meta">书签 · 第 ' + (b.chapterIndex + 1) + ' 章 · ' + markWhen(b.createdAt) + '</span>' +
+      '<span class="mi-text">' + esc(b.scene || '（这一句）') + '</span>' +
+      '</button>' +
+      '<button class="mi-del" data-act="mark-del" data-kind="bookmark" data-id="' + escAttr(b.id) + '" aria-label="删除书签">✕</button>' +
+      '</div>').join('');
+    const nts = S.marks.notes.map((n) =>
+      '<div class="mark-item note">' +
+      '<button class="mi-main" data-act="mark-jump" data-ch="' + n.chapterIndex + '" data-i="' + n.index + '">' +
+      '<span class="mi-meta">笔记 · 第 ' + (n.chapterIndex + 1) + ' 章 · ' + markWhen(n.createdAt) + '</span>' +
+      (n.quote ? '<span class="mi-quote">「' + esc(n.quote) + '」</span>' : '') +
+      '<span class="mi-text">' + esc(n.text) + '</span>' +
+      '</button>' +
+      '<button class="mi-del" data-act="mark-del" data-kind="note" data-id="' + escAttr(n.id) + '" aria-label="删除笔记">✕</button>' +
+      '</div>').join('');
+
+    const draft = S.noteDraft
+      ? '<div class="note-draft">' +
+        (S.noteDraft.quote ? '<p class="nd-quote">「' + esc(S.noteDraft.quote) + '」</p>' : '') +
+        '<textarea class="gen-area" id="noteText" placeholder="这一句让你想到什么？">' + esc(S.noteDraft.text || '') + '</textarea>' +
+        '<div class="sync-row"><button class="btn small" data-act="note-save">保存笔记</button>' +
+        '<button class="btn small ghost" data-act="note-cancel">取消</button></div></div>'
+      : '<div class="sync-row"><button class="btn small" data-act="bm-add">＋ 夹书签</button>' +
+        '<button class="btn small" data-act="note-add">✎ 写笔记</button></div>';
+
+    D.settings.innerHTML =
+      drawerHead('书签与笔记') +
+      '<div class="field"><div class="field-label"><span>这一句</span><b>' +
+      (S.marks.bookmarks.length + S.marks.notes.length) + ' 条</b></div>' + draft + '</div>' +
+      (bms || nts
+        ? '<div class="mark-list">' + bms + nts + '</div>'
+        : '<p class="story-empty">还没有书签或笔记。读到想留住的地方，按 B 夹书签，按 N 写笔记。</p>');
+  }
+
+  /* ============================================================
+     朗读（本地 Web Speech，不联网）
+     ============================================================ */
+  function ttsBeats() {
+    return Array.from(D.beats.querySelectorAll('.beat')).filter(
+      (el) => el._beat && el._beat.kind === 'line' && el._beat.text
+    );
+  }
+
+  function ttsHighlight(el) {
+    D.beats.querySelectorAll('.beat.tts-on').forEach((x) => x.classList.remove('tts-on'));
+    if (!el) return;
+    el.classList.add('tts-on');
+    const cfg = XR.Store.loadTts();
+    if (cfg.scroll !== false && el.scrollIntoView) {
+      try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { /* ignore */ }
+    }
+  }
+
+  function ttsSpeakIndex(i) {
+    const list = ttsBeats();
+    if (!list.length) { ttsStop(true); return; }
+    const idx = Math.max(0, Math.min(list.length - 1, i));
+    const el = list[idx];
+    S.tts.cursor = idx;
+    ttsHighlight(el);
+    const cfg = XR.Store.loadTts();
+    const text = (el._beat && el._beat.text) || el.textContent || '';
+    const lang = /[\u3400-\u9fff]/.test(text) ? 'zh-CN' : 'en-US';
+    XR.Tts.speak(text, {
+      rate: cfg.rate, pitch: cfg.pitch, volume: cfg.volume, voice: cfg.voice, lang, tag: idx
+    });
+  }
+
+  function ttsNext() {
+    if (!S.tts.on) return;
+    const cfg = XR.Store.loadTts();
+    if (cfg.follow === false) { ttsStop(true); return; }
+    const list = ttsBeats();
+    if (S.tts.cursor + 1 < list.length) { ttsSpeakIndex(S.tts.cursor + 1); return; }
+    // 本章这一屏读完了：整章模式直接下一章；逐句模式先放一句出来再读
+    if (S.allShown) {
+      if (autoNext()) setTimeout(() => { if (S.tts.on) ttsSpeakIndex(0); }, 500);
+      else ttsStop(true);
+      return;
+    }
+    S.tts.step = true;
+    advance();
+    setTimeout(() => {
+      S.tts.step = false;
+      if (!S.tts.on) return;
+      const now = ttsBeats();
+      if (now.length > S.tts.cursor) ttsSpeakIndex(S.tts.cursor + 1);
+      else ttsStop(true);
+    }, 420);
+  }
+
+  function ttsStart() {
+    if (!XR.Tts.supported()) { toast('这个浏览器不支持本地朗读', true); return; }
+    if (!S.book) { toast('先打开一本书'); return; }
+    setAuto(false);
+    S.tts.on = true;
+    if (D.btnTts) { D.btnTts.textContent = '❚❚'; D.btnTts.classList.add('on'); }
+    const list = ttsBeats();
+    const top = D.stage.getBoundingClientRect().top + 40;
+    let i = list.findIndex((el) => el.getBoundingClientRect().bottom > top);
+    if (i < 0) i = Math.max(0, list.length - 1);
+    ttsSpeakIndex(i);
+    toast('开始朗读 · 再点一下停');
+  }
+
+  function ttsStop(silent) {
+    S.tts.on = false;
+    S.tts.cursor = -1;
+    S.tts.step = false;
+    try { XR.Tts.stop(); } catch (e) { /* ignore */ }
+    D.beats.querySelectorAll('.beat.tts-on').forEach((x) => x.classList.remove('tts-on'));
+    if (D.btnTts) { D.btnTts.textContent = '♪'; D.btnTts.classList.remove('on'); }
+    if (!silent) toast('朗读已停');
+  }
+
+  function ttsToggle() {
+    if (S.tts.on) ttsStop();
+    else ttsStart();
+  }
+
+  function renderTtsConfig() {
+    const cfg = XR.Store.loadTts();
+    const voices = XR.Tts.voices();
+    const opts = ['<option value="">跟随系统</option>'].concat(
+      voices.map((v) => '<option value="' + escAttr(v.voiceURI) + '"' +
+        (cfg.voice === v.voiceURI ? ' selected' : '') + '>' +
+        esc(v.name) + ' · ' + esc(v.lang) + '</option>')
+    ).join('');
+    D.settings.innerHTML =
+      drawerHead('朗读') +
+      '<div class="field"><div class="field-label"><span>语速</span><b id="lblTtsRate">' + cfg.rate.toFixed(1) + '×</b></div>' +
+      '<input type="range" id="rngTtsRate" min="6" max="20" step="1" value="' + Math.round(cfg.rate * 10) + '"></div>' +
+      '<div class="field"><div class="field-label"><span>音色</span><b>' + (voices.length || 0) + ' 个可选</b></div>' +
+      '<select class="gen-input" id="selTtsVoice">' + opts + '</select>' +
+      '<p class="gen-note">用的是系统自带语音，不联网、不上传文本。Chrome 里音色列表有时要等一秒才出来。</p></div>' +
+      '<div class="field"><div class="toggle"><span>读完一句自动读下一句</span><button class="switch ' + (cfg.follow ? 'on' : '') + '" id="tgTtsFollow"></button></div>' +
+      '<div class="toggle"><span>读到哪句就滚到哪句</span><button class="switch ' + (cfg.scroll ? 'on' : '') + '" id="tgTtsScroll"></button></div></div>' +
+      '<div class="sync-row"><button class="btn small" data-act="tts-test">试听一句</button>' +
+      '<button class="btn small ghost" data-act="tts-stop">停止</button></div>' +
+      '<button class="btn full" data-act="tts-toggle">♪ 从当前这句开始读</button>' +
+      '<p class="drawer-foot">快捷键 T 开关朗读；朗读时手动翻页会先停下，避免抢节奏。</p>';
+    bindTtsConfig();
+  }
+
+  function bindTtsConfig() {
+    const cfg = XR.Store.loadTts();
+    const rate = $('#rngTtsRate', D.settings);
+    if (rate) {
+      rate.addEventListener('input', () => {
+        cfg.rate = Math.max(0.5, Math.min(2, (+rate.value) / 10));
+        const lbl = $('#lblTtsRate', D.settings);
+        if (lbl) lbl.textContent = cfg.rate.toFixed(1) + '×';
+        XR.Store.saveTts(cfg);
+      });
+    }
+    const voice = $('#selTtsVoice', D.settings);
+    if (voice) {
+      voice.addEventListener('change', () => {
+        cfg.voice = voice.value;
+        XR.Store.saveTts(cfg);
+      });
+    }
+    const follow = $('#tgTtsFollow', D.settings);
+    if (follow) {
+      follow.addEventListener('click', () => {
+        cfg.follow = !cfg.follow;
+        follow.classList.toggle('on', cfg.follow);
+        XR.Store.saveTts(cfg);
+      });
+    }
+    const scroll = $('#tgTtsScroll', D.settings);
+    if (scroll) {
+      scroll.addEventListener('click', () => {
+        cfg.scroll = !cfg.scroll;
+        scroll.classList.toggle('on', cfg.scroll);
+        XR.Store.saveTts(cfg);
+      });
+    }
+  }
+
+  /* ============================================================
+     云同步（GitHub 私有仓库）
+     ============================================================ */
+  function syncWhen(t) {
+    if (!t) return '还没同步过';
+    return new Date(Number(t)).toLocaleString();
+  }
+
+  function syncSettingsHTML() {
+    const cfg = XR.Store.loadSync();
+    const st = S.syncState || {};
+    const state = st.lastError
+      ? '上次出错：' + esc(st.lastError)
+      : '上次同步：' + syncWhen(st.lastPushAt || st.lastPullAt);
+    return '<div class="field sync-field"><div class="field-label"><span>云同步 · GitHub 私有仓库</span><b>' +
+      (cfg.enabled ? '已开' : '关') + '</b></div>' +
+      '<div class="toggle"><span>启用同步</span><button class="switch ' + (cfg.enabled ? 'on' : '') + '" data-act="sync-toggle"></button></div>' +
+      '<input class="gen-input sync-input" id="syncOwner" data-key="owner" placeholder="GitHub 用户名，如 rregjn24fw" value="' + escAttr(cfg.owner) + '">' +
+      '<input class="gen-input sync-input" id="syncRepo" data-key="repo" placeholder="仓库名（私有），如 ziliu-data" value="' + escAttr(cfg.repo) + '">' +
+      '<input class="gen-input sync-input" id="syncBranch" data-key="branch" placeholder="分支（默认 main）" value="' + escAttr(cfg.branch) + '">' +
+      '<input class="gen-input sync-input" id="syncDir" data-key="dir" placeholder="目录（默认 ziliu-sync）" value="' + escAttr(cfg.dir) + '">' +
+      '<input class="gen-input sync-input" id="syncToken" data-key="token" type="password" placeholder="访问令牌 PAT（repo 权限）" value="' + escAttr(cfg.token) + '">' +
+      '<div class="toggle"><span>自动同步（启动 / 每 ' + cfg.interval + ' 分钟 / 联网时）</span><button class="switch ' +
+      (cfg.auto ? 'on' : '') + '" data-act="sync-auto"></button></div>' +
+      '<div class="toggle"><span>正文也同步（只文字，不含插图）</span><button class="switch ' +
+      (cfg.content ? 'on' : '') + '" data-act="sync-content"></button></div>' +
+      '<div class="sync-row"><button class="btn small" data-act="sync-test">测试连接</button>' +
+      '<button class="btn small" data-act="sync-now">立即同步</button>' +
+      '<button class="btn small ghost" data-act="sync-pull">仅拉取</button></div>' +
+      '<p class="sync-state" id="syncState">' + state + '</p>' +
+      '<p class="gen-note">首次配置：<a href="https://github.com/settings/tokens" target="_blank" rel="noopener">生成 PAT</a>（勾 repo）→ 建一个私有仓库（可用本仓库）→ 填上面四项 → 测试连接 → 立即同步。令牌只存本机 localStorage，不会上传。' +
+      '冲突按每条记录的更新时间取新；删除会留墓碑，不会“复活”。离线时照常读写本地，联网或下次启动自动补同步。</p></div>';
+  }
+
+  function backupSettingsHTML() {
+    return '<div class="field"><div class="field-label"><span>备份 · 导入导出</span><b>JSON</b></div>' +
+      '<div class="sync-row"><button class="btn small" data-act="export-all">导出全部（含正文）</button>' +
+      '<button class="btn small ghost" data-act="export-sync">只导阅读数据</button></div>' +
+      '<div class="sync-row"><button class="btn small ghost" data-act="import-pick">导入备份…</button></div>' +
+      '<input type="file" id="backupFile" accept=".json,application/json" hidden>' +
+      '<p class="gen-note">导出文件包含书清单、进度、书签、笔记、番外、阿泠与设置；「含正文」会大一些，但换设备能直接读。插图不导出。</p></div>';
+  }
+
+  function downloadJSON(name, obj) {
+    try {
+      const blob = new Blob([JSON.stringify(obj)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 500);
+    } catch (e) {
+      toast('导出失败：' + e.message, true);
+    }
+  }
+
+  async function exportBackup(withContent) {
+    const snap = await XR.Store.exportAll({ content: withContent });
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    const name = 'ziliu-' + (withContent ? 'backup' : 'reading') + '-' +
+      d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '.json';
+    downloadJSON(name, snap);
+    toast('已导出 ' + name);
+  }
+
+  async function importBackup(file) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const snap = JSON.parse(text);
+      const counts = await XR.Store.importAll(snap);
+      await refreshMarks();
+      await renderShelf();
+      toast('已导入：书 ' + counts.books + ' · 进度 ' + counts.progress +
+        ' · 书签 ' + counts.bookmarks + ' · 笔记 ' + counts.notes);
+    } catch (e) {
+      toast('导入失败：' + (e && e.message ? e.message : e), true);
+    }
+  }
+
+  async function runSync(mode) {
+    if (S.syncBusy) return;
+    const cfg = XR.Store.loadSync();
+    if (!cfg.enabled) { toast('先在设置里打开「启用同步」'); return; }
+    if (!cfg.owner || !cfg.repo || !cfg.token) { toast('用户名 / 仓库 / 令牌还没填全'); return; }
+    S.syncBusy = true;
+    const label = mode === 'pull' ? '拉取中…' : '同步中…';
+    toast(label);
+    try {
+      const sum = await XR.Sync.syncNow(cfg, { push: mode !== 'pull' });
+      S.syncState = await XR.Store.getSyncState();
+      cfg.lastAt = Date.now();
+      cfg.lastStatus = sum.errors.length ? sum.errors[0] : 'ok';
+      XR.Store.saveSync(cfg);
+      await refreshMarks();
+      if (S.drawerView === 'settings') renderSettings();
+      if (S.drawerView === 'marks') renderMarks();
+      if (sum.errors.length) toast('同步有问题：' + sum.errors[0], true);
+      else toast('同步完成 · 拉 ' + sum.pulled + ' · 推 ' + sum.pushed + (sum.conflicts ? ' · 冲突 ' + sum.conflicts : ''));
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      cfg.lastStatus = msg;
+      XR.Store.saveSync(cfg);
+      toast('同步失败：' + msg, true);
+    } finally {
+      S.syncBusy = false;
+    }
+  }
+
+  async function testSync() {
+    const cfg = XR.Store.loadSync();
+    if (!cfg.owner || !cfg.repo || !cfg.token) { toast('用户名 / 仓库 / 令牌还没填全'); return; }
+    toast('正在测试…');
+    try {
+      const r = await XR.Sync.test(cfg);
+      toast('连接成功：' + r.fullName + (r.private ? '（私有）' : '（公开）') + (r.canWrite ? '' : ' · 只读'));
+    } catch (e) {
+      toast('连接失败：' + (e && e.message ? e.message : e), true);
+    }
+  }
+
+  function queueAutoSync(delay) {
+    const cfg = XR.Store.loadSync();
+    if (!cfg.enabled || !cfg.auto) return;
+    clearTimeout(S.syncTimer);
+    S.syncTimer = setTimeout(() => { runSync('both'); }, Math.max(1500, delay || 3000));
+  }
+
+  function initAutoSync() {
+    const cfg = XR.Store.loadSync();
+    clearInterval(S.syncLoop);
+    if (!cfg.enabled || !cfg.auto) return;
+    S.syncLoop = setInterval(() => {
+      if (!document.hidden) runSync('both');
+    }, cfg.interval * 60000);
+    queueAutoSync(2500);
+    if (!S.onlineBound && typeof window !== 'undefined') {
+      S.onlineBound = true;
+      window.addEventListener('online', () => queueAutoSync(1200));
+    }
   }
 
   /* ============================================================
@@ -3286,6 +3842,8 @@
     D.btnSearch = $('#btnSearch');
     D.btnStory = $('#btnStory');
     D.btnCompanion = $('#btnCompanion');
+    D.btnMarks = $('#btnMarks');
+    D.btnTts = $('#btnTts');
     D.btnAuto = $('#btnAuto');
     D.btnSettings = $('#btnSettings');
     D.stage = $('#stage');
@@ -3323,6 +3881,8 @@
     } catch (e) {
       S.companion = XR.Companion.defaultState();
     }
+    try { S.syncState = await XR.Store.getSyncState(); } catch (e) { S.syncState = null; }
+    try { await refreshMarks(); } catch (e) { /* ignore */ }
     applySettings();
     setupIO();
     bind();
@@ -3333,6 +3893,21 @@
         getLevel: () => S.settings.jump || 0
       });
     }
+    if (XR.Tts && XR.Tts.supported()) {
+      // Chrome 的音色列表是异步加载的：加载完如果正停在朗读设置页，重画一次
+      if (window.speechSynthesis && window.speechSynthesis.addEventListener) {
+        window.speechSynthesis.addEventListener('voiceschanged', () => {
+          if (S.drawerView === 'tts') renderTtsConfig();
+        });
+      }
+      XR.Tts.on('end', () => { if (S.tts.on && !S.tts.step) ttsNext(); });
+      XR.Tts.on('error', (e) => {
+        if (!S.tts.on || (e && (e.error === 'interrupted' || e.error === 'canceled'))) return;
+        ttsStop(true);
+        toast('朗读中断了：' + ((e && e.error) || '未知原因'), true);
+      });
+    }
+    initAutoSync();
     renderShelf().catch((e) => console.error(e));
     if (!XR.Store.getFlag('hello')) {
       XR.Store.setFlag('hello', 1);
