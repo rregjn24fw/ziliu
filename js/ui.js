@@ -3794,7 +3794,14 @@
     const label = mode === 'pull' ? '拉取中…' : '同步中…';
     toast(label);
     try {
-      const sum = await XR.Sync.syncNow(cfg, { push: mode !== 'pull' });
+      const sum = await XR.Sync.syncNow(cfg, {
+        push: mode !== 'pull',
+        confirmPull: async (info) => {
+          const labels = { books: '书清单', progress: '阅读进度', bookmarks: '书签', notes: '笔记', stories: '番外', companion: '阿泠', settings: '设置' };
+          const parts = info.kinds.map((k) => (labels[k.kind] || k.kind) + ' ' + k.n + ' 处').join('、');
+          return window.confirm('云端有 ' + info.total + ' 处更新比本地新（' + parts + '）。\n\n确定 = 用云端覆盖本地\n取消 = 保留本地，跳过这些数据');
+        }
+      });
       S.syncState = await XR.Store.getSyncState();
       cfg.lastAt = Date.now();
       cfg.lastStatus = sum.errors.length ? sum.errors[0] : 'ok';
@@ -3802,8 +3809,17 @@
       await refreshMarks();
       if (S.drawerView === 'settings') renderSettings();
       if (S.drawerView === 'marks') renderMarks();
-      if (sum.errors.length) toast('同步有问题：' + sum.errors[0], true);
-      else toast('同步完成 · 拉 ' + sum.pulled + ' · 推 ' + sum.pushed + (sum.conflicts ? ' · 冲突 ' + sum.conflicts : ''));
+      if (sum.errors.length) {
+        toast('同步有问题：' + sum.errors[0], true);
+      } else if (sum.pushed > 0 && sum.pulled > 0) {
+        toast('✓ 同步成功 · 推送到云端 ' + sum.pushed + ' 处，拉取 ' + sum.pulled + ' 处');
+      } else if (sum.pushed > 0) {
+        toast('✓ 已推送到云端 ' + sum.pushed + ' 处' + (sum.files.length ? '（' + sum.files.length + ' 个文件）' : ''));
+      } else if (sum.pulled > 0) {
+        toast('✓ 已从云端拉取 ' + sum.pulled + ' 处');
+      } else {
+        toast('✓ 已是最新，无需同步');
+      }
     } catch (e) {
       const msg = e && e.message ? e.message : String(e);
       cfg.lastStatus = msg;

@@ -289,6 +289,8 @@
     const device = st.deviceId || '';
     const types = o.kinds && o.kinds.length ? o.kinds : KINDS;
 
+    // 阶段 1：拉取 + 合并，先算出「云端会覆盖本地」的清单，问过用户再动手
+    const plan = [];
     for (const kind of types) {
       const path = pathFor(cfg, kind);
       let remote = null;
@@ -300,43 +302,60 @@
       }
       const local = await localItems(kind);
       const merged = mergeItems(kind, local, remote ? parsePayload(kind, remote.text) : []);
-      if (merged.changed) {
-        await Store.applyRemote(kind, merged.items);
-        summary.pulled += merged.items.length;
-      }
       summary.conflicts += merged.conflicts;
+      plan.push({ kind, path, remote, merged, wins: merged.conflicts });
+    }
 
-      const payload = buildPayload(kind, merged.items, device);
+    // 阶段 2：云端有比本地新的数据时，先问一声，别默默覆盖
+    let rejectPull = false;
+    if (summary.conflicts > 0 && typeof o.confirmPull === 'function') {
+      const info = {
+        total: summary.conflicts,
+        kinds: plan.filter((p) => p.wins > 0).map((p) => ({ kind: p.kind, n: p.wins }))
+      };
+      rejectPull = !(await o.confirmPull(info));
+    }
+
+    // 阶段 3：应用合并结果 + 推送
+    for (const p of plan) {
+      const skip = rejectPull && p.wins > 0;
+      if (p.merged.changed && !skip) {
+        await Store.applyRemote(p.kind, p.merged.items);
+        summary.pulled += p.merged.items.length;
+      }
+      const payload = buildPayload(p.kind, p.merged.items, device);
       const text = JSON.stringify(payload, null, 2);
-      const same = remote && fingerprint(kind, parsePayload(kind, remote.text)) === fingerprint(kind, merged.items);
-      const dirty = !!(st.dirty && st.dirty[kind]);
-      if (o.push === false || (same && !dirty)) continue;
+      const same = p.remote && fingerprint(p.kind, parsePayload(p.kind, p.remote.text)) === fingerprint(p.kind, p.merged.items);
+      const dirty = !!(st.dirty && st.dirty[p.kind]);
+      if (skip || o.push === false || (same && !dirty)) continue;
+      // 云端没有、本地也没有的数据集，不必推一个空文件上去
+      if (!p.merged.items || p.merged.items.length === 0) continue;
       try {
-        const sha = await putFile(cfg, path, text, (remote && remote.sha) || (st.shas && st.shas[path]) || '', 'ziliu: sync ' + kind);
-        summary.pushed += merged.items.length;
-        summary.files.push(path);
-        st.shas[path] = sha;
-        delete st.dirty[kind];
-        cleared.push(kind);
+        const sha = await putFile(cfg, p.path, text, (p.remote && p.remote.sha) || (st.shas && st.shas[p.path]) || '', 'ziliu: sync ' + p.kind);
+        summary.pushed += p.merged.items.length;
+        summary.files.push(p.path);
+        st.shas[p.path] = sha;
+        delete st.dirty[p.kind];
+        cleared.push(p.kind);
       } catch (e) {
         // 云端刚被别人改过：重取一次 sha 再试一遍
         if (e.status === 409 || e.status === 422) {
           try {
-            const again = await getFile(cfg, path);
-            const sha2 = await putFile(cfg, path, text, (again && again.sha) || '', 'ziliu: sync ' + kind);
-            summary.pushed += merged.items.length;
-            summary.files.push(path);
-            st.shas[path] = sha2;
-            delete st.dirty[kind];
-            cleared.push(kind);
+            const again = await getFile(cfg, p.path);
+            const sha2 = await putFile(cfg, p.path, text, (again && again.sha) || '', 'ziliu: sync ' + p.kind);
+            summary.pushed += p.merged.items.length;
+            summary.files.push(p.path);
+            st.shas[p.path] = sha2;
+            delete st.dirty[p.kind];
+            cleared.push(p.kind);
           } catch (e2) {
-            summary.errors.push(kind + '：' + e2.message);
+            summary.errors.push(p.kind + '：' + e2.message);
           }
         } else if (e.status === 404 || e.status === 403) {
           // 能读到仓库（probeAccess 已过）却写不进文件：令牌只有读权限
-          summary.errors.push(kind + '：写入被拒（' + e.status + '）。令牌能读这个仓库但写不进去 —— 它的 Contents 权限要选「Read and write」，现在多半只有「Read」（只读）。到令牌设置里把 Contents 改成 Read and write');
+          summary.errors.push(p.kind + '：写入被拒（' + e.status + '）。令牌能读这个仓库但写不进去 —— 它的 Contents 权限要选「Read and write」，现在多半只有「Read」（只读）。到令牌设置里把 Contents 改成 Read and write');
         } else {
-          summary.errors.push(kind + '：' + e.message);
+          summary.errors.push(p.kind + '：' + e.message);
         }
       }
     }

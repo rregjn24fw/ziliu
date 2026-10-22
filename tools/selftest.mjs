@@ -844,4 +844,64 @@ await okAsync('一次同步 = 拉取远端新进度 + 推送本地书签', async
   }
 });
 
+await okAsync('拉取覆盖前会询问；拒绝则不覆盖也不推送', async () => {
+  const files = new Map();
+  const realFetch = globalThis.fetch;
+  const realStore = globalThis.XR.Store;
+  const remoteProgress = [{ bookId: 'b1', index: 99, updatedAt: 5000 }];
+  const localProgress = [{ bookId: 'b1', index: 1, updatedAt: 1000 }];
+  files.set('data/progress.json', JSON.stringify({ app: 'ziliu-sync', kind: 'progress', items: remoteProgress }));
+  const applied = {};
+  const state = { deviceId: 'dev', shas: {}, dirty: {}, lastPushAt: 0, lastPullAt: 0, lastError: '' };
+  let asked = null;
+
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    const method = (opts.method || 'GET').toUpperCase();
+    if (method === 'PUT') {
+      return { ok: true, status: 200, json: async () => ({ content: { sha: 'shaX' } }) };
+    }
+    if (u.indexOf('/contents/') === -1 && /\/repos\/u\/r(\?|$)/.test(u)) {
+      return { ok: true, status: 200, json: async () => ({ full_name: 'u/r', private: true, permissions: {} }) };
+    }
+    const path = decodeURIComponent(u.split('/contents/')[1] || '').split('?')[0];
+    if (files.has(path)) {
+      return { ok: true, status: 200, json: async () => ({ type: 'file', sha: 'sha-old', content: Buffer.from(files.get(path), 'utf8').toString('base64') }) };
+    }
+    return { ok: false, status: 404, json: async () => ({ message: 'Not Found' }) };
+  };
+  globalThis.XR.Store = {
+    getSyncState: async () => JSON.parse(JSON.stringify(state)),
+    saveSyncState: async (patch) => { Object.assign(state, patch); if (patch.clearDirty) for (const k of [].concat(patch.clearDirty)) delete state.dirty[k]; return state; },
+    syncSnapshot: async () => ({ books: [], progress: localProgress, bookmarks: [], notes: [], stories: [], companion: null, settings: {} }),
+    applyRemote: async (kind, items) => { applied[kind] = items; return items.length; },
+    loadSettings: () => ({}),
+    getFlag: () => 0,
+    getCompanion: async () => null,
+    getBookContent: async () => null,
+    applyBookContent: async () => 0
+  };
+  try {
+    const cfg = { enabled: true, owner: 'u', repo: 'r', branch: 'main', dir: 'data', token: 't', content: false, auto: false };
+    const sum = await Sync.syncNow(cfg, {
+      kinds: ['progress'],
+      confirmPull: async (info) => { asked = info; return false; }
+    });
+    assert.ok(asked && asked.total >= 1, '应该先询问是否覆盖');
+    assert.ok(!applied.progress, '拒绝后不应覆盖本地进度');
+    assert.strictEqual(sum.pushed, 0, '拒绝后不应推送被覆盖的数据集');
+
+    // 同意覆盖：应该应用远端
+    const sum2 = await Sync.syncNow(cfg, {
+      kinds: ['progress'],
+      confirmPull: async (info) => { asked = info; return true; }
+    });
+    assert.ok(applied.progress, '同意后应覆盖本地进度');
+    assert.strictEqual(applied.progress[0].index, 99, '覆盖后本地进度取云端新值');
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.XR.Store = realStore;
+  }
+});
+
 console.log('\n通过 ' + pass + ' 项' + (process.exitCode ? '，但有失败' : '，全部正常') + '\n');
