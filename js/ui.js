@@ -218,7 +218,31 @@
     const book = await XR.Store.getBook(id);
     if (!book) { toast('这本书已经不在了'); renderShelf(); return; }
     if (!book.chapters || !book.chapters.length) {
-      toast('这本书只有云端记录：正文不参与同步，重新导入同一文件即可接上进度与书签', true);
+      // 云端幽灵书：同步开着就直接从 GitHub 下载正文，下载完接着读
+      const cfg = XR.Store.loadSync();
+      const cfgOk = cfg && cfg.enabled && cfg.owner && cfg.repo && cfg.token &&
+        (XR.Sync && typeof XR.Sync.pullBookContent === 'function');
+      if (cfgOk) {
+        toast('正在从云端下载正文…');
+        try {
+          const ok = await XR.Sync.pullBookContent(id);
+          if (ok) {
+            const fresh = await XR.Store.getBook(id);
+            if (fresh && fresh.chapters && fresh.chapters.length) {
+              toast('✓ 正文已下载，继续阅读');
+              return openBook(id);
+            }
+          }
+          toast('云端没有这本书的正文：去原设备开「同步正文」后同步一次', true);
+          renderShelf();
+          return;
+        } catch (err) {
+          toast('正文下载失败：' + (err && err.message ? err.message : err), true);
+          renderShelf();
+          return;
+        }
+      }
+      toast('这本书只有云端记录：打开设置里的同步（含「同步正文」）即可自动下载', true);
       renderShelf();
       return;
     }
@@ -3207,7 +3231,8 @@
         XR.Store.saveSync(cfg);
         renderSettings();
         initAutoSync();
-        if (cfg.enabled) toast('同步已开：填好用户名 / 仓库 / 令牌，再点「测试连接」');
+        renderSyncDock();
+        if (cfg.enabled) toast(cfg.token ? '同步已开：右下角悬浮按钮可随时上传 / 下载' : '同步已开：默认仓库已填好，粘贴令牌即可');
       } else if (act === 'sync-auto') {
         const cfg = XR.Store.loadSync();
         cfg.auto = !cfg.auto;
@@ -3216,16 +3241,25 @@
         initAutoSync();
       } else if (act === 'sync-content') {
         const cfg = XR.Store.loadSync();
-        cfg.content = !cfg.content;
+        cfg.content = cfg.content === false; // 当前关 → 开；当前开 → 关
         XR.Store.saveSync(cfg);
         renderSettings();
         toast(cfg.content ? '正文也会同步（只文字，不含插图）' : '正文只留在本机');
+        if (cfg.content && cfg.enabled) runSync('both');
       } else if (act === 'sync-test') {
         testSync();
       } else if (act === 'sync-now') {
         runSync('both');
+      } else if (act === 'sync-push') {
+        runSync('push');
       } else if (act === 'sync-pull') {
         runSync('pull');
+      } else if (act === 'sync-content-all') {
+        pushAllContent();
+      } else if (act === 'sync-repo') {
+        const cfg2 = XR.Store.loadSync();
+        if (!cfg2.owner || !cfg2.repo) { toast('先填用户名和仓库名'); return; }
+        window.open('https://github.com/' + encodeURIComponent(cfg2.owner) + '/' + encodeURIComponent(cfg2.repo) + '/tree/' + encodeURIComponent(cfg2.branch || 'main') + '/' + String(cfg2.dir || 'data').split('/').map(encodeURIComponent).join('/'), '_blank', 'noopener');
       } else if (act === 'export-all') {
         exportBackup(true);
       } else if (act === 'export-sync') {
@@ -3718,20 +3752,24 @@
     return '<div class="field sync-field"><div class="field-label"><span>云同步 · GitHub 私有仓库</span><b>' +
       (cfg.enabled ? '已开' : '关') + '</b></div>' +
       '<div class="toggle"><span>启用同步</span><button class="switch ' + (cfg.enabled ? 'on' : '') + '" data-act="sync-toggle"></button></div>' +
-      '<input class="gen-input sync-input" id="syncOwner" data-key="owner" placeholder="GitHub 用户名，如 rregjn24fw" value="' + escAttr(cfg.owner) + '">' +
-      '<input class="gen-input sync-input" id="syncRepo" data-key="repo" placeholder="仓库名（私有），如 ziliu-data" value="' + escAttr(cfg.repo) + '">' +
+      '<input class="gen-input sync-input" id="syncOwner" data-key="owner" placeholder="GitHub 用户名" value="' + escAttr(cfg.owner) + '">' +
+      '<input class="gen-input sync-input" id="syncRepo" data-key="repo" placeholder="仓库名（私有）" value="' + escAttr(cfg.repo) + '">' +
       '<input class="gen-input sync-input" id="syncBranch" data-key="branch" placeholder="分支（默认 main）" value="' + escAttr(cfg.branch) + '">' +
       '<input class="gen-input sync-input" id="syncDir" data-key="dir" placeholder="目录（默认 data）" value="' + escAttr(cfg.dir) + '">' +
       '<input class="gen-input sync-input" id="syncToken" data-key="token" type="password" autocomplete="off" spellcheck="false" placeholder="访问令牌：ghp_… 或 github_pat_…" value="' + escAttr(cfg.token) + '">' +
       '<div class="toggle"><span>自动同步（启动 / 每 ' + cfg.interval + ' 分钟 / 联网时）</span><button class="switch ' +
       (cfg.auto ? 'on' : '') + '" data-act="sync-auto"></button></div>' +
-      '<div class="toggle"><span>正文也同步（只文字，不含插图）</span><button class="switch ' +
-      (cfg.content ? 'on' : '') + '" data-act="sync-content"></button></div>' +
+      '<div class="toggle"><span>正文也同步（默认开：换设备点书即自动下载）</span><button class="switch ' +
+      (cfg.content !== false ? 'on' : '') + '" data-act="sync-content"></button></div>' +
       '<div class="sync-row"><button class="btn small" data-act="sync-test">测试连接</button>' +
-      '<button class="btn small" data-act="sync-now">立即同步</button>' +
-      '<button class="btn small ghost" data-act="sync-pull">仅拉取</button></div>' +
+      '<button class="btn small" data-act="sync-now">⟲ 双向同步</button></div>' +
+      '<div class="sync-row"><button class="btn small ghost" data-act="sync-push">↑ 仅上传</button>' +
+      '<button class="btn small ghost" data-act="sync-pull">↓ 仅下载</button></div>' +
+      '<div class="sync-row"><button class="btn small ghost" data-act="sync-content-all">⧉ 补传全部正文</button>' +
+      '<button class="btn small ghost" data-act="sync-repo">打开数据仓库</button></div>' +
       '<p class="sync-state" id="syncState">' + state + '</p>' +
-      '<p class="gen-note">首次配置：<a href="https://github.com/settings/personal-access-tokens/new?name=ziliu-sync&description=%E5%AD%97%E6%B5%81%E9%98%85%E8%AF%BB%E6%95%B0%E6%8D%AE%E5%90%8C%E6%AD%A5&expires_in=90&contents=write&metadata=read" target="_blank" rel="noopener">生成只读写的令牌</a>（Fine-grained：Repository access 只选数据仓库，Contents 选 Read and write；也可用 <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">经典 PAT</a> 勾 repo）→ 建一个私有仓库 → 填上面几项 → 测试连接 → 立即同步。令牌只存本机 localStorage，不会上传。' +
+      '<p class="gen-note">默认仓库已填好 <b>' + esc(cfg.owner || 'rregjn24fw') + '/' + esc(cfg.repo || 'ziliu-sync') + '</b>，只差令牌。' +
+      '首次配置：<a href="https://github.com/settings/personal-access-tokens/new?name=ziliu-sync&description=%E5%AD%97%E6%B5%81%E9%98%85%E8%AF%BB%E6%95%B0%E6%8D%AE%E5%90%8C%E6%AD%A5&expires_in=90&contents=write&metadata=read" target="_blank" rel="noopener">生成令牌</a>（Repository access 选这个仓库，Contents 选 Read and write）→ 粘贴到上面 → 测试连接 → 立即同步。令牌只存本机 localStorage，不会上传。' +
       '冲突按每条记录的更新时间取新；删除会留墓碑，不会“复活”。离线时照常读写本地，联网或下次启动自动补同步。</p></div>';
   }
 
@@ -3791,12 +3829,17 @@
     if (!cfg.owner || !cfg.repo || !cfg.token) { toast('用户名 / 仓库 / 令牌还没填全'); return; }
     if (!tokenLooksOk(cfg.token)) { toast('令牌看起来不对：应以 gho_ / ghp_ / github_pat_ 开头（现在填的是「' + String(cfg.token).slice(0, 6) + '…」）', true); return; }
     S.syncBusy = true;
-    const label = mode === 'pull' ? '拉取中…' : '同步中…';
+    if (D.syncMain) D.syncMain.classList.add('busy');
+    dockState('busy', '同步中…');
+    const label = mode === 'pull' ? '拉取中…' : mode === 'push' ? '上传中…' : '同步中…';
     toast(label);
     try {
       const sum = await XR.Sync.syncNow(cfg, {
+        // 仅上传：先拉一次合并再推，但不应用远端覆盖（避免把本机正在读的书换掉）
         push: mode !== 'pull',
+        skipApply: mode === 'push',
         confirmPull: async (info) => {
+          if (mode === 'push') return false;
           const labels = { books: '书清单', progress: '阅读进度', bookmarks: '书签', notes: '笔记', stories: '番外', companion: '阿泠', settings: '设置' };
           const parts = info.kinds.map((k) => (labels[k.kind] || k.kind) + ' ' + k.n + ' 处').join('、');
           return window.confirm('云端有 ' + info.total + ' 处更新比本地新（' + parts + '）。\n\n确定 = 用云端覆盖本地\n取消 = 保留本地，跳过这些数据');
@@ -3810,24 +3853,134 @@
       if (S.drawerView === 'settings') renderSettings();
       if (S.drawerView === 'marks') renderMarks();
       if (sum.errors.length) {
+        dockState('err', sum.errors[0]);
         toast('同步有问题：' + sum.errors[0], true);
+      } else if (sum.contentPushed || sum.contentPulled) {
+        dockState('ok', '正文 上传 ' + sum.contentPushed + ' / 下载 ' + sum.contentPulled);
+        toast('✓ 同步成功 · 正文上传 ' + sum.contentPushed + ' 本 / 下载 ' + sum.contentPulled + ' 本' +
+          (sum.pushed || sum.pulled ? '，数据 ' + sum.pushed + ' 推 / ' + sum.pulled + ' 拉' : ''));
       } else if (sum.pushed > 0 && sum.pulled > 0) {
+        dockState('ok', '上次同步：' + syncWhen(Date.now()));
         toast('✓ 同步成功 · 推送到云端 ' + sum.pushed + ' 处，拉取 ' + sum.pulled + ' 处');
       } else if (sum.pushed > 0) {
+        dockState('ok', '上次同步：' + syncWhen(Date.now()));
         toast('✓ 已推送到云端 ' + sum.pushed + ' 处' + (sum.files.length ? '（' + sum.files.length + ' 个文件）' : ''));
       } else if (sum.pulled > 0) {
+        dockState('ok', '上次同步：' + syncWhen(Date.now()));
         toast('✓ 已从云端拉取 ' + sum.pulled + ' 处');
       } else {
+        dockState('ok', '已是最新');
         toast('✓ 已是最新，无需同步');
       }
     } catch (e) {
       const msg = e && e.message ? e.message : String(e);
       cfg.lastStatus = msg;
       XR.Store.saveSync(cfg);
+      dockState('err', msg);
       toast('同步失败：' + msg, true);
     } finally {
       S.syncBusy = false;
+      if (D.syncMain) D.syncMain.classList.remove('busy');
     }
+  }
+
+  /* ============================================================
+     悬浮同步坞
+     ============================================================ */
+  function dockState(state, tip) {
+    if (!D.syncDot) return;
+    D.syncDot.dataset.state = state || 'off';
+    if (tip) D.syncDot.title = tip;
+  }
+
+  function renderSyncDock() {
+    if (!D.syncDock) return;
+    const cfg = XR.Store.loadSync();
+    const ready = cfg.enabled && cfg.owner && cfg.repo && cfg.token;
+    D.syncDock.hidden = !cfg.enabled;
+    if (!cfg.enabled) return;
+    const st = S.syncState || {};
+    if (!ready) dockState('off', '还缺仓库信息或令牌');
+    else if (st.lastError) dockState('err', '上次出错：' + st.lastError);
+    else if (st.lastPushAt || st.lastPullAt) dockState('ok', '上次同步：' + syncWhen(st.lastPushAt || st.lastPullAt));
+    else dockState('off', '还没同步过');
+  }
+
+  /* 正文专项：把所有本机有正文的书重新推一遍（用于早期版本漏传） */
+  async function pushAllContent() {
+    const cfg = XR.Store.loadSync();
+    if (!cfg.enabled || !cfg.owner || !cfg.repo || !cfg.token) { toast('先配好同步仓库和令牌', true); return; }
+    if (S.syncBusy) return;
+    S.syncBusy = true;
+    dockState('busy', '正在上传正文…');
+    toast('正在上传全部正文…');
+    try {
+      const snap = await XR.Store.syncSnapshot();
+      const books = (snap.books || []).filter((b) => !b.deleted && !b.ghost);
+      let ok = 0;
+      const errs = [];
+      for (const b of books) {
+        try {
+          const local = await XR.Store.getBookContent(b.id);
+          if (!local || !local.chapters || !local.chapters.length) continue;
+          const path = (cfg.dir || 'data') + '/content/' + b.id + '.json';
+          const remote = await XR.Sync.getFile(cfg, path);
+          const text = JSON.stringify({ id: b.id, title: b.title || '', updatedAt: Number(b.updatedAt) || Date.now(), chapters: local.chapters, stats: local.stats || {} });
+          await XR.Sync.putFile(cfg, path, text, (remote && remote.sha) || '', 'ziliu: content ' + (b.title || b.id));
+          ok++;
+        } catch (e) {
+          errs.push((b.title || b.id) + '：' + (e && e.message ? e.message : e));
+        }
+      }
+      if (errs.length) {
+        dockState('err', errs[0]);
+        toast('正文上传 ' + ok + ' 本，失败 ' + errs.length + ' 本：' + errs[0], true);
+      } else if (ok) {
+        dockState('ok', '正文已上传 ' + ok + ' 本');
+        toast('✓ 正文已上传 ' + ok + ' 本到 GitHub');
+      } else {
+        toast('本机没有可上传的正文（书都是云端记录）', true);
+      }
+    } finally {
+      S.syncBusy = false;
+    }
+  }
+
+  function bindSyncDock() {
+    if (!D.syncDock) return;
+    // 触屏没有 hover：点一下主按钮先展开（再点执行同步）
+    D.syncDock.addEventListener('touchstart', () => D.syncDock.classList.add('open'), { passive: true });
+    D.syncMain.addEventListener('click', () => {
+      if (!D.syncDock.classList.contains('open') && matchMedia('(hover: none)').matches) {
+        D.syncDock.classList.add('open');
+        return; // 第一次点只展开
+      }
+    }, true);
+    D.syncDock.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-sd]');
+      if (!btn) return;
+      const act = btn.dataset.sd;
+      if (S.syncBusy && act !== 'settings') { toast('正在同步中，稍等…'); return; }
+      if (act === 'both') runSync('both');
+      else if (act === 'push') runSync('push');
+      else if (act === 'pull') runSync('pull');
+      else if (act === 'content') pushAllContent();
+      else if (act === 'settings') {
+        // 设置抽屉挂在阅读器里；书架上点 ⚙ 就直接打开同步开关
+        if (D.reader && !D.reader.hidden) openDrawer('settings');
+        else {
+          const cfg2 = XR.Store.loadSync();
+          if (!cfg2.enabled) {
+            cfg2.enabled = true;
+            XR.Store.saveSync(cfg2);
+            initAutoSync();
+            toast('同步已开启：阅读页面 ⚙ 里粘贴令牌即可使用');
+          } else {
+            toast('设置在阅读页面：打开一本书 → ⚙ → 云同步');
+          }
+        }
+      }
+    });
   }
 
   async function testSync() {
@@ -3856,11 +4009,15 @@
   function initAutoSync() {
     const cfg = XR.Store.loadSync();
     clearInterval(S.syncLoop);
+    renderSyncDock();
+    // 关掉自动同步时，悬浮坞仍要显示（手动同步随时可用）
     if (!cfg.enabled || !cfg.auto) return;
     S.syncLoop = setInterval(() => {
       if (!document.hidden) runSync('both');
     }, cfg.interval * 60000);
     queueAutoSync(2500);
+    // 换设备首次打开：同步开着就立刻拉一轮，把云端书直接落到书架
+    if (!cfg.lastAt) setTimeout(() => { runSync('both'); }, 600);
     if (!S.onlineBound && typeof window !== 'undefined') {
       S.onlineBound = true;
       window.addEventListener('online', () => queueAutoSync(1200));
@@ -3907,6 +4064,10 @@
     D.companionPanel = $('#companionPanel');
 
     D.toast = $('#toast');
+    D.syncDock = $('#syncDock');
+    D.syncMain = $('#syncDock .sd-main');
+    D.syncDot = $('#syncDock .sd-dot');
+    bindSyncDock();
     D.crash = $('#crash');
     D.crashMsg = $('#crashMsg');
   }
