@@ -798,14 +798,14 @@
   const SYNC_KEY = 'ziliu.sync.v1';
   const SYNC_DEFAULTS = {
     enabled: false,
-    owner: '',
-    repo: '',
+    owner: 'rregjn24fw',
+    repo: 'ziliu-sync',
     branch: 'main',
     dir: 'data',
     token: '',
     auto: true,
     interval: 5,      // 分钟
-    content: false,   // 正文是否也同步
+    content: true,    // 正文默认同步（一本一个文件存 GitHub）
     lastAt: 0,
     lastStatus: ''
   };
@@ -822,7 +822,8 @@
     out.dir = String(out.dir || 'data').replace(/^\/+|\/+$/g, '') || 'ziliu-sync';
     out.interval = Math.max(1, Math.min(120, Number(out.interval) || 5));
     out.auto = out.auto !== false;
-    out.content = !!out.content;
+    // 只有用户曾经明确关掉正文同步（存过 content:false）才关；默认就是开
+    out.content = out.content !== false;
     out.enabled = !!out.enabled;
     return out;
   }
