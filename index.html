@@ -81,6 +81,18 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
+  <!-- 悬浮同步坞：书架上随时可见 -->
+  <div id="syncDock" class="sync-dock" hidden>
+    <button class="sd-main" data-sd="both" title="双向同步（先拉后推）">⟲</button>
+    <div class="sd-extra">
+      <button data-sd="push" title="上传到 GitHub">↑</button>
+      <button data-sd="pull" title="从 GitHub 下载">↓</button>
+      <button data-sd="content" title="补传 / 补齐正文">⧉</button>
+      <button data-sd="settings" title="同步设置">⚙</button>
+    </div>
+    <span class="sd-dot" data-state="off" title="同步状态"></span>
+  </div>
+
   <!-- 守卷人阿泠：场景气泡 + 对话面板 -->
   <div id="companionBubble" class="companion-bubble" hidden></div>
   <div id="companionPanel" class="companion-panel" hidden></div>
