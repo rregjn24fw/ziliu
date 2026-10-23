@@ -1398,6 +1398,102 @@ body[data-theme="ink"] .sel-chip { color: #0a0a0a; }
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+/* ============ 悬浮同步坞 ============ */
+.sync-dock {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 180;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--sans);
+}
+.sync-dock[hidden] { display: none; }
+
+.sd-main,
+.sd-extra button {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--panel-solid);
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  display: grid;
+  place-items: center;
+  transition: transform .22s var(--ease), color .2s, background .2s, box-shadow .2s;
+}
+.sd-main {
+  width: 50px;
+  height: 50px;
+  font-size: 19px;
+  color: var(--ink);
+  background: var(--panel-solid);
+}
+.sd-main:hover,
+.sd-extra button:hover { color: var(--accent, #8a6a3a); transform: translateY(-2px); }
+.sd-main:active,
+.sd-extra button:active { transform: scale(.94); }
+.sd-main.busy { animation: sd-spin 1.1s linear infinite; }
+
+@keyframes sd-spin { to { transform: rotate(360deg); } }
+
+/* 次级按钮默认收起，悬停/聚焦时展开 */
+.sd-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition: max-height .28s var(--ease), opacity .22s, transform .28s var(--ease);
+}
+.sync-dock:hover .sd-extra,
+.sync-dock:focus-within .sd-extra,
+.sync-dock.open .sd-extra {
+  max-height: 220px;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+/* 状态灯：贴在主按钮右上角 */
+.sd-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #b9b3a6;
+  box-shadow: 0 0 0 2px var(--bg, #f7f4ed);
+  transition: background .25s;
+}
+.sd-dot[data-state="ok"] { background: #4f9d69; }
+.sd-dot[data-state="err"] { background: #c4553f; }
+.sd-dot[data-state="busy"] { background: #c9a227; animation: sd-pulse .9s ease-in-out infinite; }
+
+@keyframes sd-pulse { 50% { opacity: .35; } }
+
+@media (max-width: 640px) {
+  .sync-dock { right: 14px; bottom: 14px; }
+  .sd-main { width: 44px; height: 44px; font-size: 17px; }
+  .sd-extra button { width: 38px; height: 38px; }
+  .toast { bottom: 78px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sd-main.busy { animation: none; }
+  .sd-dot[data-state="busy"] { animation: none; }
+}
+
 .crash {
   position: fixed; inset: 0; z-index: 5000;
   background: #12100e; color: #f0e9df;
