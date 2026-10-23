@@ -137,6 +137,11 @@
     return obj.items;
   }
 
+  /* 容错解析：坏文件不让整轮同步崩掉 */
+  function safeParse(text) {
+    try { return JSON.parse(String(text || '{}')); } catch (e) { return null; }
+  }
+
   function describeError(status, body) {
     const msg = body && body.message ? String(body.message) : '';
     if (status === 401) return '令牌无效或已过期（401）';
@@ -271,7 +276,7 @@
   async function syncNow(cfg, opts) {
     const o = opts || {};
     const Store = XR.Store;
-    const summary = { pulled: 0, pushed: 0, conflicts: 0, files: [], errors: [], at: Date.now() };
+    const summary = { pulled: 0, pushed: 0, conflicts: 0, contentPulled: 0, contentPushed: 0, files: [], errors: [], at: Date.now() };
     if (!cfg || !cfg.enabled) {
       summary.errors.push('同步没开：先在设置里填好仓库并打开「启用同步」');
       return summary;
@@ -303,7 +308,7 @@
       const local = await localItems(kind);
       const merged = mergeItems(kind, local, remote ? parsePayload(kind, remote.text) : []);
       summary.conflicts += merged.conflicts;
-      plan.push({ kind, path, remote, merged, wins: merged.conflicts });
+      plan.push({ kind, path, remote, merged, local, wins: merged.conflicts });
     }
 
     // 阶段 2：云端有比本地新的数据时，先问一声，别默默覆盖
@@ -319,17 +324,19 @@
     // 阶段 3：应用合并结果 + 推送
     for (const p of plan) {
       const skip = rejectPull && p.wins > 0;
-      if (p.merged.changed && !skip) {
+      // 仅上传模式：本地数据不落地覆盖，但仍把本地数据推上去
+      if (p.merged.changed && !skip && !o.skipApply) {
         await Store.applyRemote(p.kind, p.merged.items);
         summary.pulled += p.merged.items.length;
       }
-      const payload = buildPayload(p.kind, p.merged.items, device);
+      const pushItems = o.skipApply ? p.local : p.merged.items;
+      const payload = buildPayload(p.kind, pushItems, device);
       const text = JSON.stringify(payload, null, 2);
-      const same = p.remote && fingerprint(p.kind, parsePayload(p.kind, p.remote.text)) === fingerprint(p.kind, p.merged.items);
+      const same = p.remote && fingerprint(p.kind, parsePayload(p.kind, p.remote.text)) === fingerprint(p.kind, pushItems);
       const dirty = !!(st.dirty && st.dirty[p.kind]);
       if (skip || o.push === false || (same && !dirty)) continue;
       // 云端没有、本地也没有的数据集，不必推一个空文件上去
-      if (!p.merged.items || p.merged.items.length === 0) continue;
+      if (!pushItems || pushItems.length === 0) continue;
       try {
         const sha = await putFile(cfg, p.path, text, (p.remote && p.remote.sha) || (st.shas && st.shas[p.path]) || '', 'ziliu: sync ' + p.kind);
         summary.pushed += p.merged.items.length;
@@ -360,29 +367,60 @@
       }
     }
 
-    // 正文：只有用户明确打开才同步（一本书一个文件）
-    if (cfg.content && o.content !== false) {
+    // 正文：默认同步（cfg.content 默认 true，一本书一个文件）
+    if (cfg.content !== false && o.content !== false) {
       try {
         const books = (await Store.syncSnapshot()).books.filter((b) => !b.deleted);
         for (const b of books) {
           const path = (cfg.dir || 'data') + '/content/' + b.id + '.json';
           const local = await Store.getBookContent(b.id);
-          if (!local) continue;
+          // 幽灵书（本机没有正文）：绝不能把空章节推上去覆盖云端正文
+          const hasLocal = !!(local && local.chapters && local.chapters.length);
           const remote = await getFile(cfg, path);
-          const localStamp = Number(b.updatedAt) || 0;
-          const remoteStamp = remote ? (Number((JSON.parse(remote.text || '{}')).updatedAt) || 0) : 0;
-          if (remote && remoteStamp > localStamp) {
-            const keep = JSON.parse(remote.text);
-            await Store.applyBookContent(b.id, keep);
-            summary.pulled++;
+          const remoteObj = remote ? safeParse(remote.text) : null;
+          const remoteHas = !!(remoteObj && Array.isArray(remoteObj.chapters) && remoteObj.chapters.length);
+
+          if (!hasLocal) {
+            // 本机没有正文：仅上传模式不动本地，其余模式无条件拉下来
+            if (remoteHas && !o.skipApply) {
+              await Store.applyBookContent(b.id, remoteObj);
+              summary.contentPulled++;
+            }
             continue;
           }
-          if (remote && remoteStamp === localStamp) continue;
-          const text = JSON.stringify({ id: b.id, updatedAt: localStamp, chapters: local.chapters, stats: local.stats });
-          const sha = await putFile(cfg, path, text, (remote && remote.sha) || '', 'ziliu: sync content ' + b.title);
-          summary.files.push(path);
-          summary.pushed++;
-          st.shas[path] = sha;
+
+          const localStamp = Number(b.updatedAt) || 0;
+          const remoteStamp = remoteHas ? (Number(remoteObj.updatedAt) || 0) : 0;
+
+          // 云端有正文且不旧于本地 → 以云端为准（避免幽灵书把时间戳刷成"本机更新"后永不拉取）
+          if (remoteHas && remoteStamp >= localStamp && !o.skipApply) {
+            if (remoteStamp > localStamp) {
+              await Store.applyBookContent(b.id, remoteObj);
+              summary.contentPulled++;
+            }
+            continue;
+          }
+
+          // 仅拉取模式：不推送
+          if (o.push === false) continue;
+
+          const text = JSON.stringify({ id: b.id, title: b.title || '', updatedAt: localStamp, chapters: local.chapters, stats: local.stats });
+          try {
+            const sha = await putFile(cfg, path, text, (remote && remote.sha) || '', 'ziliu: sync content ' + (b.title || b.id));
+            summary.files.push(path);
+            summary.contentPushed++;
+            st.shas[path] = sha;
+          } catch (e) {
+            if (e.status === 409 || e.status === 422) {
+              const again = await getFile(cfg, path);
+              const sha2 = await putFile(cfg, path, text, (again && again.sha) || '', 'ziliu: sync content ' + (b.title || b.id));
+              summary.files.push(path);
+              summary.contentPushed++;
+              st.shas[path] = sha2;
+            } else {
+              summary.errors.push('正文《' + (b.title || b.id) + '》写入失败：' + e.message);
+            }
+          }
         }
       } catch (e) {
         summary.errors.push('正文：' + e.message);
@@ -400,11 +438,30 @@
     return summary;
   }
 
+  /* 点开幽灵书时按需下载单本正文；成功返回 true。
+     只拉不推：本机正文为空时绝不覆盖云端。 */
+  async function pullBookContent(bookId) {
+    const Store = XR.Store;
+    const cfg = Store.loadSync();
+    if (!cfg || !cfg.enabled || !cfg.owner || !cfg.repo || !cfg.token) return false;
+    if (!bookId) return false;
+    const b = await Store.getBook(bookId);
+    if (!b) return false;
+    if (b.chapters && b.chapters.length) return true;
+    const path = (cfg.dir || 'data') + '/content/' + bookId + '.json';
+    const remote = await getFile(cfg, path);
+    if (!remote) return false;
+    const keep = safeParse(remote.text);
+    if (!keep || !Array.isArray(keep.chapters) || !keep.chapters.length) return false;
+    await Store.applyBookContent(bookId, keep);
+    return true;
+  }
+
   const Sync = {
     SCHEMA, FILES, KINDS,
     toB64, fromB64, pathFor, keyOf, stampOf, fingerprint,
     mergeItems, buildPayload, parsePayload, describeError,
-    test, syncNow, probeAccess, getFile, putFile
+    test, syncNow, probeAccess, getFile, putFile, pullBookContent
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = Sync;
